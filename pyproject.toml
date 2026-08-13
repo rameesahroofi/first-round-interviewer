@@ -1,0 +1,17 @@
+[project]
+name = "first-round-interviewer"
+version = "0.1.0"
+description = "AI-powered first-round interview agent"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "livekit-agents>=1.6,<2",
+    "livekit-plugins-google",
+    "python-dotenv",
+    "langgraph",
+    "langchain",
+    "langchain-google-genai",
+]
+
+[tool.livekit]
+agent = "src/realtime/agent.py"
