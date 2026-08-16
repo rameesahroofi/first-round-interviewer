@@ -715,7 +715,7 @@ function App() {
 
               <small>
                 {analysis
-                  ? "Score out of 10"
+                  ? "Score out of 100"
                   : analysisLoading
                   ? "Loading analysis..."
                   : "Analysis pending"}
@@ -735,7 +735,7 @@ function App() {
 
               <small>
                 {analysis
-                  ? "Score out of 10"
+                  ? "Score out of 100"
                   : analysisLoading
                   ? "Loading analysis..."
                   : "Analysis pending"}
@@ -755,7 +755,7 @@ function App() {
 
               <small>
                 {analysis
-                  ? "Score out of 10"
+                  ? "Score out of 100"
                   : analysisLoading
                   ? "Loading analysis..."
                   : "Analysis pending"}
@@ -775,7 +775,7 @@ function App() {
 
               <small>
                 {analysis
-                  ? "Score out of 10"
+                  ? "Score out of 100"
                   : analysisLoading
                   ? "Loading analysis..."
                   : "Analysis pending"}
