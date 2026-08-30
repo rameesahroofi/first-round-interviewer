@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.13"
 
 dependencies = [
     "livekit-agents>=1.6,<2",
+    "livekit-api",
     "livekit-plugins-google",
     "python-dotenv",
     "langgraph",

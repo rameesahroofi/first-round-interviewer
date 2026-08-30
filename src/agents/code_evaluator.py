@@ -41,6 +41,12 @@ stderr: {stderr or "(none)"}
 
 Evaluate the code on correctness, efficiency, and quality.
 
+NOTE ON EXECUTION: In-browser execution is only available for Python (via Pyodide) and
+JavaScript/TypeScript (via sandboxed iframe). For other languages, execution results may
+be unavailable. When stderr contains "In-browser execution not supported" or stdout is empty
+due to unsupported execution, evaluate the code based on static code review alone and do not
+penalize the candidate for the missing execution signal.
+
 Return ONLY valid JSON (no markdown fences):
 {{
     "score": 0,
@@ -48,6 +54,7 @@ Return ONLY valid JSON (no markdown fences):
     "efficiency": 0,
     "code_quality": 0,
     "passed_execution": true,
+    "execution_available": true,
     "strengths": [],
     "weaknesses": [],
     "feedback": "",
@@ -59,7 +66,8 @@ Rules:
 - correctness: does the code solve the problem correctly? 0-100
 - efficiency: time/space complexity quality. 0-100
 - code_quality: readability, naming, structure. 0-100
-- passed_execution: true if stderr is empty and stdout looks correct
+- passed_execution: true if the code was executed successfully and stderr is empty; if execution was not available, set to false but do not penalize the score for it
+- execution_available: true if execution results are meaningful; false if execution was not available for this language
 - strengths: specific things done well
 - weaknesses: specific issues with the code
 - feedback: constructive improvement suggestions

@@ -1,14 +1,19 @@
 import json
+import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+import livekit.api as lk_api
 from pydantic import BaseModel
 
 from src.agents.answer_evaluation import AnswerEvaluator
+from src.agents.answer_extractor import AnswerExtractor
 from src.agents.code_evaluator import CodeEvaluator
 from src.agents.final_analyzer import FinalAnalyzer
 from src.agents.linkedin_optimizer import LinkedInOptimizer
@@ -16,6 +21,8 @@ from src.agents.resume_parser import ResumeParser
 from src.agents.resume_rater import ResumeRater
 from src.report_generator import generate_report
 from src.graph import run_pipeline
+
+load_dotenv(override=True)
 
 
 # --------------------------------------------------
@@ -99,6 +106,17 @@ class CodeEvalRequest(BaseModel):
     stdout: str = ""
     stderr: str = ""
     competency: str = ""
+
+
+class LiveKitTokenRequest(BaseModel):
+    candidate_name: str = "candidate"
+    room_name: str = ""
+
+
+class FinishInterviewRequest(BaseModel):
+    code_submissions: list[CodeSubmission] = []
+    integrity_flags: list[IntegrityFlag] = []
+    flagged_for_review: bool = False
 
 
 # --------------------------------------------------
@@ -287,7 +305,163 @@ def get_analysis():
 
 
 # --------------------------------------------------
-# EVALUATE CODE (Piston execution result -> Gemini scoring)
+# LIVEKIT TOKEN
+# --------------------------------------------------
+
+@app.post("/api/livekit-token")
+def mint_livekit_token(request: LiveKitTokenRequest):
+    """
+    Mint a LiveKit access token so the frontend can join a room.
+    The LiveKit agent worker (configured with agent_name='first-round-interviewer')
+    is automatically dispatched into rooms created via the LiveKit Cloud dashboard
+    or via `livekit-agent dev` which watches for new rooms.
+    """
+    api_key = os.getenv("LIVEKIT_API_KEY")
+    api_secret = os.getenv("LIVEKIT_API_SECRET")
+    livekit_url = os.getenv("LIVEKIT_URL")
+
+    if not api_key or not api_secret or not livekit_url:
+        raise HTTPException(
+            status_code=500,
+            detail="LiveKit environment variables are not configured.",
+        )
+
+    room_name = request.room_name or f"interview-{uuid.uuid4()}"
+    identity = f"candidate-{uuid.uuid4().hex[:8]}"
+
+    token = (
+        lk_api.AccessToken(api_key, api_secret)
+        .with_identity(identity)
+        .with_name(request.candidate_name or "Candidate")
+        .with_grants(
+            lk_api.VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+            )
+        )
+        .to_jwt()
+    )
+
+    return {
+        "token": token,
+        "url": livekit_url,
+        "room_name": room_name,
+    }
+
+
+# --------------------------------------------------
+# FINISH INTERVIEW (transcript-derived answers)
+# --------------------------------------------------
+
+@app.post("/api/finish-interview")
+def finish_interview(request: FinishInterviewRequest):
+    """
+    End the interview by extracting answers from the LiveKit transcript
+    server-side via AnswerExtractor, then running the full evaluation pipeline.
+    """
+    try:
+        # 1. Extract answers from transcript using AnswerExtractor
+        extractor = AnswerExtractor()
+        extracted = extractor.extract()
+        extracted_answers = extracted.get("answers", [])
+        print(f"Extracted {len(extracted_answers)} answers from transcript.")
+
+        # 2. Evaluate each answer with Gemini
+        evaluator = AnswerEvaluator()
+        evaluations = []
+
+        for ans in extracted_answers:
+            candidate_answer = ans.get("candidate_answer", "")
+            category = ans.get("category", "")
+
+            if not candidate_answer.strip() or category == "candidate_questions":
+                evaluation = {
+                    "score": 0, "relevance": 0, "technical_quality": 0,
+                    "communication": 0, "strengths": [], "weaknesses": [],
+                    "feedback": "No answer provided." if not candidate_answer.strip() else "Candidate question round - not scored.",
+                    "recommendation": "N/A"
+                }
+            else:
+                print(f"Evaluating question {ans.get('question_id', '?')}...")
+                evaluation = evaluator.evaluate(
+                    question=ans.get("question", ""),
+                    answer=candidate_answer,
+                    competency=ans.get("competency", ""),
+                )
+
+            evaluations.append({
+                "question_id": ans.get("question_id"),
+                "question": ans.get("question", ""),
+                "category": category,
+                "competency": ans.get("competency", ""),
+                "candidate_answer": candidate_answer,
+                "evaluation": evaluation,
+            })
+
+        # 3. Save answer evaluations
+        answer_evaluation = {"evaluations": evaluations}
+        ANSWER_EVALUATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ANSWER_EVALUATION_PATH.write_text(
+            json.dumps(answer_evaluation, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # 4. Load JD / Resume / Gap Analysis
+        for path in [JD_PATH, RESUME_PATH, GAP_ANALYSIS_PATH]:
+            if not path.exists():
+                raise FileNotFoundError(f"Required file not found: {path}")
+
+        jd = json.loads(JD_PATH.read_text(encoding="utf-8"))
+        resume = json.loads(RESUME_PATH.read_text(encoding="utf-8"))
+        gap_analysis = json.loads(GAP_ANALYSIS_PATH.read_text(encoding="utf-8"))
+
+        # 5. Prepare code submissions and integrity flags
+        code_subs = [cs.model_dump() for cs in request.code_submissions]
+        integrity_flags = [f.model_dump() for f in request.integrity_flags]
+
+        # 6. Generate final analysis
+        analyzer = FinalAnalyzer()
+        final_analysis = analyzer.analyze(
+            jd=jd,
+            resume=resume,
+            gap_analysis=gap_analysis,
+            answer_evaluation=answer_evaluation,
+            code_submissions=code_subs if code_subs else None,
+            integrity_flags=integrity_flags if integrity_flags else None,
+            flagged_for_review=request.flagged_for_review,
+        )
+
+        # 7. Save final analysis
+        FINAL_ANALYSIS_PATH.write_text(
+            json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print("Final interview analysis generated successfully.")
+
+        # 8. Generate and save human-readable report
+        try:
+            report_md = generate_report(final_analysis)
+            FINAL_REPORT_PATH.write_text(report_md, encoding="utf-8")
+            print("Final interview report markdown generated successfully.")
+        except Exception as err:
+            print(f"Failed to generate report markdown: {err}")
+
+        return {
+            "success": True,
+            "message": "Interview evaluated successfully.",
+            "analysis": final_analysis,
+        }
+
+    except FileNotFoundError as e:
+        print(f"Finish interview failed (missing file): {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Finish interview failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --------------------------------------------------
+# EVALUATE CODE (in-browser execution result -> Gemini scoring)
 # --------------------------------------------------
 
 @app.post("/api/evaluate-code")

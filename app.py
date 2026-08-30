@@ -17,11 +17,11 @@ if "plan_approved" not in st.session_state:
 
 st.set_page_config(
     page_title="Interview Question Review",
-    page_icon="u0001f3a4",
+    page_icon="🎤",
     layout="wide",
 )
 
-st.title("u0001f3a4 Interview Question Review")
+st.title("🎤 Interview Question Review")
 st.write(
     "Review and edit the AI-generated interview questions "
     "before starting the interview."
@@ -31,13 +31,13 @@ st.write(
 # CONTEXT PANEL: Resume / JD / Gap Analysis Summary
 # --------------------------------------------------
 
-with st.expander("u0001f4cb Candidate & Role Context (click to expand)", expanded=True):
+with st.expander("📋 Candidate & Role Context (click to expand)", expanded=True):
     col1, col2 = st.columns(2)
 
     with col1:
         if RESUME_PATH.exists():
             resume = json.loads(RESUME_PATH.read_text(encoding="utf-8"))
-            st.subheader("u0001f464 Candidate Summary")
+            st.subheader("👤 Candidate Summary")
             st.write(f"**Name:** {resume.get('candidate_name', 'Not found')}")
 
             skills = resume.get("skills", [])
@@ -69,7 +69,7 @@ with st.expander("u0001f4cb Candidate & Role Context (click to expand)", expande
     with col2:
         if JD_PATH.exists():
             jd = json.loads(JD_PATH.read_text(encoding="utf-8"))
-            st.subheader("u0001f4bc Job Description Summary")
+            st.subheader("💼 Job Description Summary")
             st.write(f"**Role:** {jd.get('role', 'Not found')}")
             st.write(f"**Seniority:** {jd.get('seniority', 'Not specified')}")
             must_haves = jd.get("must_haves", [])
@@ -82,17 +82,17 @@ with st.expander("u0001f4cb Candidate & Role Context (click to expand)", expande
 
         if GAP_ANALYSIS_PATH.exists():
             gap = json.loads(GAP_ANALYSIS_PATH.read_text(encoding="utf-8"))
-            st.subheader("u26a0ufe0f Gap Analysis")
+            st.subheader("⚠️ Gap Analysis")
             gaps = gap.get("skill_gaps", [])
             if gaps:
                 st.write("**Skill Gaps (probe harder):**")
                 for g in gaps[:5]:
-                    st.write(f"  - u26a0ufe0f {g}")
+                    st.write(f"  - ⚠️ {g}")
             strengths = gap.get("candidate_strengths", [])
             if strengths:
                 st.write("**Candidate Strengths:**")
                 for s in strengths[:4]:
-                    st.write(f"  - u2705 {s}")
+                    st.write(f"  - ✅ {s}")
 
 st.divider()
 
@@ -120,7 +120,7 @@ for question in questions:
     qid = question.get("id", "?")
     cat = question.get("category", "")
     
-    icon = "u0001f4bb" if cat == "coding" else "u2753"
+    icon = "💻" if cat == "coding" else "❓"
     st.markdown(f"### {icon} Question {qid} [{cat}]")
 
     category = st.text_input(
@@ -159,7 +159,7 @@ for question in questions:
     }
 
     if cat == "coding":
-        st.markdown("**u0001f4bb Coding Question Details**")
+        st.markdown("**💻 Coding Question Details**")
         lang = st.text_input("Language", value=question.get("language", "python"), key=f"lang_{qid}")
         difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"],
                                   index=["easy", "medium", "hard"].index(question.get("difficulty", "medium")),
@@ -176,7 +176,7 @@ for question in questions:
 # APPROVE BUTTON
 # --------------------------------------------------
 
-if st.button("u2705 Approve Interview Plan", type="primary"):
+if st.button("✅ Approve Interview Plan", type="primary"):
     approved_plan = {"questions": edited_questions}
     APPROVED_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
     APPROVED_PLAN_PATH.write_text(
@@ -193,7 +193,7 @@ if st.button("u2705 Approve Interview Plan", type="primary"):
 
 if st.session_state.plan_approved:
     st.divider()
-    st.header("u0001f4ca Interview Results")
+    st.header("📊 Interview Results")
 
 if not FINAL_ANALYSIS_PATH.exists():
     st.info("Final interview analysis is not available yet.")
@@ -212,29 +212,29 @@ else:
         st.metric("JD Alignment", f"{final_analysis.get('jd_alignment_score', 0)}/100")
 
     st.divider()
-    st.subheader("u0001f3af Recommendation")
+    st.subheader("🎯 Recommendation")
     st.write(final_analysis.get("recommendation", "Not available"))
 
-    st.subheader("u0001f4dd Summary")
+    st.subheader("📝 Summary")
     st.write(final_analysis.get("summary", "No summary available."))
 
     col_l, col_r = st.columns(2)
     with col_l:
-        st.subheader("u0001f4aa Strengths")
+        st.subheader("💪 Strengths")
         for s in final_analysis.get("strengths", []):
             st.write(f"- {s}")
-        st.subheader("u0001f9d1u200du0001f4bb Technical Gaps")
+        st.subheader("🧑‍💻 Technical Gaps")
         for g in final_analysis.get("technical_gaps", []):
             st.write(f"- {g}")
     with col_r:
-        st.subheader("u26a0ufe0f Weaknesses")
+        st.subheader("⚠️ Weaknesses")
         for w in final_analysis.get("weaknesses", []):
             st.write(f"- {w}")
-        st.subheader("u0001f4ac Communication Gaps")
+        st.subheader("💬 Communication Gaps")
         for cg in final_analysis.get("communication_gaps", []):
             st.write(f"- {cg}")
 
-    st.subheader("u0001f4da Improvement Plan")
+    st.subheader("📚 Improvement Plan")
     for item in final_analysis.get("improvement_plan", []):
         st.write(f"- {item}")
 
@@ -242,7 +242,7 @@ else:
     code_perf = final_analysis.get("code_performance", {})
     if code_perf and code_perf.get("attempted", 0) > 0:
         st.divider()
-        st.subheader("u0001f4bb Code Performance")
+        st.subheader("💻 Code Performance")
         c1, c2, c3 = st.columns(3)
         with c1:
             st.metric("Attempted", code_perf.get("attempted", 0))
@@ -260,11 +260,11 @@ else:
         flagged = integrity.get("flagged_for_review", False)
         flag_count = integrity.get("flag_count", 0)
         if flagged:
-            st.error(f"u26a0ufe0f FLAGGED FOR REVIEW — {flag_count} integrity violations detected")
+            st.error(f"⚠️ FLAGGED FOR REVIEW — {flag_count} integrity violations detected")
         elif flag_count > 0:
-            st.warning(f"u26a0ufe0f {flag_count} minor integrity event(s) noted")
+            st.warning(f"⚠️ {flag_count} minor integrity event(s) noted")
         else:
-            st.success("u2705 No integrity issues detected")
+            st.success("✅ No integrity issues detected")
 
         flags = integrity.get("flags", [])
         if flags:
@@ -274,5 +274,5 @@ else:
 
     if FINAL_REPORT_PATH.exists():
         st.divider()
-        st.subheader("u0001f4c4 Full Interview Report")
+        st.subheader("📄 Full Interview Report")
         st.markdown(FINAL_REPORT_PATH.read_text(encoding="utf-8"))

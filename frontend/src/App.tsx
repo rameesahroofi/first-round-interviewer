@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import Editor from "@monaco-editor/react";
+import { Room, Track } from "livekit-client";
 import {
   ArrowRight, CheckCircle2, ChevronRight, Clock3,
   Code2, Eye, EyeOff, FileText, Mic, Play, ShieldCheck,
   Sparkles, Target, UserRound, AlertTriangle,
-  Star, Copy, Check,
+  Star, Copy, Check, Radio,
 } from "lucide-react";
 import "./App.css";
 
@@ -122,43 +123,123 @@ const ROLE_OPTIONS = [
 ];
 
 // ──────────────────────────────────────────────────────────────────
-// PISTON CODE RUNNER (free, no API key)
+// IN-BROWSER CODE EXECUTION (Pyodide + sandboxed iframe)
 // ──────────────────────────────────────────────────────────────────
 
-async function runCodeWithPiston(
+type PyodideInterface = {
+  runPythonAsync: (code: string) => Promise<unknown>;
+  setStdout: (opts: { batched: (s: string) => void }) => void;
+  setStderr: (opts: { batched: (s: string) => void }) => void;
+};
+
+let _pyodideInstance: PyodideInterface | null = null;
+let _pyodideLoading = false;
+
+async function loadPyodide(): Promise<PyodideInterface> {
+  if (_pyodideInstance) return _pyodideInstance;
+  if (_pyodideLoading) {
+    // Wait for in-flight load
+    while (_pyodideLoading) await new Promise((r) => setTimeout(r, 100));
+    return _pyodideInstance!;
+  }
+  _pyodideLoading = true;
+  // Load the Pyodide script from CDN
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Failed to load Pyodide"));
+    document.head.appendChild(script);
+  });
+  const loader = (window as unknown as Record<string, unknown>).loadPyodide as
+    ((opts?: Record<string, unknown>) => Promise<PyodideInterface>) | undefined;
+  if (!loader) throw new Error("Pyodide loader not available");
+  _pyodideInstance = await loader({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/" });
+  _pyodideLoading = false;
+  return _pyodideInstance;
+}
+
+async function runPythonLocally(code: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const pyodide = await loadPyodide();
+  let stdout = "";
+  let stderr = "";
+  pyodide.setStdout({ batched: (s: string) => { stdout += s + "\n"; } });
+  pyodide.setStderr({ batched: (s: string) => { stderr += s + "\n"; } });
+  try {
+    await pyodide.runPythonAsync(code);
+    return { stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: 0 };
+  } catch (e: unknown) {
+    const errMsg = (e as Error).message ?? String(e);
+    return { stdout: stdout.trimEnd(), stderr: errMsg, exitCode: 1 };
+  }
+}
+
+function runJsInIframe(code: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    const iframe = document.createElement("iframe");
+    iframe.sandbox.add("allow-scripts");
+    iframe.style.display = "none";
+    let stdout = "";
+    let stderr = "";
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve({ stdout, stderr: stderr + "\nExecution timed out (5s limit).", exitCode: 1 });
+    }, 5000);
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== iframe.contentWindow) return;
+      const data = event.data as { type?: string; text?: string };
+      if (data?.type === "stdout") stdout += data.text + "\n";
+      if (data?.type === "stderr") stderr += data.text + "\n";
+      if (data?.type === "done") {
+        clearTimeout(timeout);
+        cleanup();
+        resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: data.text ? 1 : 0 });
+      }
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("message", onMessage);
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    };
+
+    window.addEventListener("message", onMessage);
+
+    const wrappedCode = `
+<script>
+  const _logs = [];
+  const _errs = [];
+  const origLog = console.log;
+  console.log = function(...args) { _logs.push(args.map(String).join(' ')); parent.postMessage({type:'stdout',text:args.map(String).join(' ')}, '*'); };
+  console.error = function(...args) { _errs.push(args.map(String).join(' ')); parent.postMessage({type:'stderr',text:args.map(String).join(' ')}, '*'); };
+  try {
+    ${code}
+    parent.postMessage({type:'done',text:''}, '*');
+  } catch(e) {
+    parent.postMessage({type:'stderr',text:String(e)}, '*');
+    parent.postMessage({type:'done',text:'error'}, '*');
+  }
+</script>`;
+
+    iframe.srcdoc = wrappedCode;
+    document.body.appendChild(iframe);
+  });
+}
+
+async function runCodeLocally(
   language: string,
   code: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const langMap: Record<string, { language: string; version: string }> = {
-    python: { language: "python", version: "3.10.0" },
-    javascript: { language: "javascript", version: "18.15.0" },
-    typescript: { language: "typescript", version: "5.0.3" },
-    java: { language: "java", version: "15.0.2" },
-    kotlin: { language: "kotlin", version: "1.8.20" },
-    cpp: { language: "c++", version: "10.2.0" },
-    c: { language: "c", version: "10.2.0" },
-    go: { language: "go", version: "1.16.2" },
-    rust: { language: "rust", version: "1.50.0" },
-    ruby: { language: "ruby", version: "3.0.1" },
-    sql: { language: "sqlite3", version: "3.36.0" },
-  };
-  const pistonLang = langMap[language.toLowerCase()] ?? { language, version: "*" };
-  const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      language: pistonLang.language,
-      version: pistonLang.version,
-      files: [{ content: code }],
-    }),
-  });
-  if (!resp.ok) throw new Error(`Piston API error: ${resp.status}`);
-  const data = await resp.json();
-  return {
-    stdout: data.run?.stdout ?? "",
-    stderr: data.run?.stderr ?? "",
-    exitCode: data.run?.code ?? 0,
-  };
+  const lang = language.toLowerCase();
+  if (lang === "python") {
+    return runPythonLocally(code);
+  }
+  if (lang === "javascript" || lang === "typescript" || lang === "js" || lang === "ts") {
+    return runJsInIframe(code);
+  }
+  // Unsupported language — no in-browser execution
+  return { stdout: "", stderr: "In-browser execution not supported for this language. Code will be reviewed without execution.", exitCode: -1 };
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -235,7 +316,6 @@ function App() {
   const [answer, setAnswer] = useState("");
   const [answers, setAnswers] = useState<string[]>([]);
   const [isRecording, setIsRecording] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [timeLeft, setTimeLeft] = useState(30 * 60);
 
@@ -278,7 +358,12 @@ function App() {
   const [cvResult, setCvResult] = useState<Record<string, unknown> | null>(null);
   const [cvError, setCvError] = useState("");
 
-  // Speech refs
+  // ── LiveKit state
+  const [livekitConnected, setLivekitConnected] = useState(false);
+  const livekitRoomRef = useRef<Room | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  // Speech refs (kept for live transcript display only)
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const finalTranscriptRef = useRef("");
   const answerRef = useRef("");
@@ -330,19 +415,8 @@ function App() {
   }, [screen, timeLeft]);
 
   // ──────────────────────────────────────────────────────────────────
-  // SPEAK QUESTION
+  // QUESTION CHANGE (reset UI state — agent speaks questions via LiveKit)
   // ──────────────────────────────────────────────────────────────────
-
-  const speakQuestion = useCallback((text: string) => {
-    if (!text) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utterance);
-  }, []);
 
   useEffect(() => {
     if (screen !== "interview") return;
@@ -352,9 +426,7 @@ function App() {
     answerRef.current = "";
     finalTranscriptRef.current = "";
     setRunOutput(null);
-    const t = window.setTimeout(() => speakQuestion(q.question), 500);
-    return () => { window.clearTimeout(t); window.speechSynthesis.cancel(); setIsSpeaking(false); };
-  }, [screen, currentQuestion, questions, speakQuestion]);
+  }, [screen, currentQuestion, questions]);
 
   // ──────────────────────────────────────────────────────────────────
   // TAB-SWITCH DETECTION
@@ -516,8 +588,6 @@ function App() {
     if (isRecording) return;
     const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SR) { alert("Speech recognition not supported. Use Chrome."); return; }
-    window.speechSynthesis.cancel();
-    setIsSpeaking(false);
     if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* ignore */ } }
     const recognition = new SR();
     recognition.continuous = true;
@@ -602,9 +672,8 @@ function App() {
   // START INTERVIEW
   // ──────────────────────────────────────────────────────────────────
 
-  const startInterview = () => {
+  const startInterview = async () => {
     if (questions.length === 0) { alert("Questions not loaded yet."); return; }
-    window.speechSynthesis.cancel();
     stopRecording();
     setCurrentQuestion(0);
     setAnswer("");
@@ -619,8 +688,55 @@ function App() {
     setStrikeCount(0);
     setCodeSubmissions([]);
     setCodeMap({});
+    setLivekitConnected(false);
     if (proctoringEnabled) startProctoring();
     setScreen("interview");
+
+    // Connect to LiveKit room for real-time voice interview
+    try {
+      const candidateName = (resumeSummary as { name?: string }).name || "Candidate";
+      const tokenResp = await fetch("http://localhost:8000/api/livekit-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_name: candidateName }),
+      });
+      if (!tokenResp.ok) throw new Error("Failed to get LiveKit token");
+      const { token, url } = await tokenResp.json();
+
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+      });
+
+      // Subscribe to agent audio track for playback
+      room.on("trackSubscribed", (track) => {
+        if (track.kind === Track.Kind.Audio) {
+          const el = audioRef.current;
+          if (el) {
+            track.attach(el);
+            el.play().catch(() => { /* autoplay blocked */ });
+          }
+        }
+      });
+
+      room.on("trackUnsubscribed", (track) => {
+        if (track.kind === Track.Kind.Audio) {
+          track.detach().forEach((el) => el.remove());
+        }
+      });
+
+      await room.connect(url, token);
+      await room.localParticipant.setMicrophoneEnabled(true);
+      livekitRoomRef.current = room;
+      setLivekitConnected(true);
+      console.log("Connected to LiveKit room:", room.name);
+
+      // Also start browser SpeechRecognition in parallel for live transcript display
+      startRecording();
+    } catch (e: unknown) {
+      console.error("LiveKit connection failed:", e);
+      alert(`LiveKit connection failed: ${(e as Error).message}. The interview will continue without live voice.`);
+    }
   };
 
   // ──────────────────────────────────────────────────────────────────
@@ -635,7 +751,7 @@ function App() {
     setIsRunning(true);
     setRunOutput(null);
     try {
-      const result = await runCodeWithPiston(question.language, code);
+      const result = await runCodeLocally(question.language, code);
       setRunOutput(result);
     } catch (e: unknown) {
       setRunOutput({ stdout: "", stderr: (e as Error).message });
@@ -693,7 +809,6 @@ function App() {
   const nextQuestion = async () => {
     const latestAnswer = answerRef.current || answer;
     stopRecording();
-    window.speechSynthesis.cancel();
     const updated = [...answers];
     updated[currentQuestion] = latestAnswer;
     setAnswers(updated);
@@ -705,28 +820,27 @@ function App() {
       setAnswer(na);
       answerRef.current = na;
       finalTranscriptRef.current = na;
+      // Re-start speech recognition for the new question (LiveKit audio stays connected)
+      if (livekitConnected) startRecording();
       return;
     }
 
-    // Final submission
-    const submission = {
-      answers: questions.map((q, i) => ({
-        question_id: q.id,
-        question: q.question,
-        category: q.category,
-        competency: q.competency,
-        candidate_answer: updated[i] ?? "",
-      })),
-      code_submissions: codeSubmissions,
-      integrity_flags: integrityFlags,
-      flagged_for_review: flaggedForReview,
-    };
+    // Final submission — answers are extracted server-side from the LiveKit transcript
+    await submitInterviewEnd();
+  };
 
+  // Submit the interview end via /api/finish-interview (transcript-derived answers)
+  const submitInterviewEnd = async () => {
+    stopProctoring();
     try {
-      const resp = await fetch("http://127.0.0.1:8000/api/answers", {
+      const resp = await fetch("http://127.0.0.1:8000/api/finish-interview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(submission),
+        body: JSON.stringify({
+          code_submissions: codeSubmissions,
+          integrity_flags: integrityFlags,
+          flagged_for_review: flaggedForReview,
+        }),
       });
       if (!resp.ok) throw new Error(`Failed to submit: ${resp.status}`);
       const data = await resp.json();
@@ -735,8 +849,36 @@ function App() {
       alert(`Submission failed: ${(e as Error).message}`);
     }
 
-    stopProctoring();
+    // Disconnect LiveKit
+    if (livekitRoomRef.current) {
+      try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
+      livekitRoomRef.current = null;
+      setLivekitConnected(false);
+    }
+
     setScreen("results");
+  };
+
+  // Submit partial interview data (used when interview is halted due to proctoring violations)
+  const submitPartialInterview = async () => {
+    try {
+      const resp = await fetch("http://127.0.0.1:8000/api/finish-interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code_submissions: codeSubmissions,
+          integrity_flags: integrityFlags,
+          flagged_for_review: true,
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.analysis) setAnalysis(data.analysis);
+      }
+    } catch {
+      // Non-blocking — partial data may not produce a full analysis
+      setAnalysisError("Interview was halted. Partial analysis may not be available.");
+    }
   };
 
   const formatTime = (s: number) =>
@@ -795,14 +937,38 @@ function App() {
   };
 
   // ──────────────────────────────────────────────────────────────────
+  // 3-STRIKE HALT: stop the interview when flagged for review
+  // ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (flaggedForReview && screen === "interview") {
+      stopRecording();
+      stopProctoring();
+      // Disconnect LiveKit
+      if (livekitRoomRef.current) {
+        try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
+        livekitRoomRef.current = null;
+        setLivekitConnected(false);
+      }
+      // Submit partial data and navigate to results
+      submitPartialInterview();
+      setScreen("results");
+    }
+  }, [flaggedForReview, screen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ──────────────────────────────────────────────────────────────────
   // CLEANUP
   // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     return () => {
-      window.speechSynthesis.cancel();
       if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* ignore */ } }
       stopProctoring();
+      // Cleanup LiveKit room on unmount
+      if (livekitRoomRef.current) {
+        try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
+        livekitRoomRef.current = null;
+      }
     };
   }, [stopProctoring]);
 
@@ -1251,11 +1417,14 @@ function App() {
           </div>
 
           <div className="live-interviewer-status">
-            <div className={`voice-indicator ${isSpeaking ? "speaking" : ""}`}>
-              <Sparkles size={20} />
+            <div className={`voice-indicator ${livekitConnected ? "speaking" : ""}`}>
+              {livekitConnected ? <Radio size={20} /> : <Sparkles size={20} />}
             </div>
-            <span>{isSpeaking ? "AI interviewer is speaking..." : isRecording ? "Listening to your answer..." : "AI interviewer"}</span>
+            <span>{livekitConnected ? "Live voice interview connected" : isRecording ? "Listening to your answer..." : "AI interviewer"}</span>
           </div>
+
+          {/* Hidden audio element for LiveKit agent voice playback */}
+          <audio ref={audioRef} style={{ display: "none" }} />
 
           <h1>{question.question}</h1>
 
@@ -1296,7 +1465,7 @@ function App() {
                   <div className="answer-header">
                     <span className="answer-label">VERBAL EXPLANATION</span>
                     {!isRecording
-                      ? <button className="record-button" onClick={startRecording} disabled={isSpeaking}><Mic size={18} /> Start Talking</button>
+                      ? <button className="record-button" onClick={startRecording}><Mic size={18} /> Start Talking</button>
                       : <button className="record-button recording" onClick={stopRecording}><Mic size={18} /> Stop</button>
                     }
                   </div>
@@ -1312,16 +1481,16 @@ function App() {
             /* ── VOICE QUESTION LAYOUT ──────────────────────── */
             <>
               <p className="question-helper">
-                {isSpeaking ? "Listen to the interviewer. You can start answering when finished." : "Speak naturally. Your answer will be transcribed automatically."}
+                {livekitConnected ? "The AI interviewer is speaking live. Answer naturally when prompted." : isRecording ? "Speak naturally. Your answer will be transcribed automatically." : "Press Start Answer to begin speaking."}
               </p>
               <div className="answer-card">
                 <div className="answer-header">
                   <div>
                     <span className="answer-label">YOUR ANSWER</span>
-                    <p>{isRecording ? "Listening through your microphone" : "Your spoken answer will appear here"}</p>
+                    <p>{isRecording ? "Listening through your microphone" : livekitConnected ? "Live voice connected — answer when prompted" : "Your spoken answer will appear here"}</p>
                   </div>
                   {!isRecording
-                    ? <button className="record-button" onClick={startRecording} disabled={isSpeaking}><Mic size={18} />{isSpeaking ? "Wait..." : "Start Answer"}</button>
+                    ? <button className="record-button" onClick={startRecording}><Mic size={18} />Start Answer</button>
                     : <button className="record-button recording" onClick={stopRecording}><Mic size={18} />Stop Answer</button>
                   }
                 </div>
@@ -1333,17 +1502,17 @@ function App() {
                 <div className="answer-footer">
                   <span>{answer.length} characters</span>
                   {isRecording && <span className="recording-status"><span className="recording-dot" />Listening...</span>}
-                  {isSpeaking && <span className="recording-status"><span className="recording-dot" />AI speaking...</span>}
+                  {livekitConnected && <span className="recording-status"><span className="recording-dot" />Live voice connected</span>}
                 </div>
               </div>
             </>
           )}
 
           <div className="interview-actions">
-            <button className="secondary-button" onClick={() => { stopRecording(); window.speechSynthesis.cancel(); stopProctoring(); setScreen("home"); }}>
+            <button className="secondary-button" onClick={() => { stopRecording(); stopProctoring(); if (livekitRoomRef.current) { try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ } livekitRoomRef.current = null; setLivekitConnected(false); } setScreen("home"); }}>
               Exit Interview
             </button>
-            <button className="primary-button" onClick={nextQuestion} disabled={isSpeaking}>
+            <button className="primary-button" onClick={nextQuestion}>
               {currentQuestion === questions.length - 1 ? "Finish Interview" : "Next Question"}
               <ChevronRight size={18} />
             </button>
