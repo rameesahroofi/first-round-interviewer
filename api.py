@@ -152,6 +152,12 @@ async def prepare_interview(
             resume_bytes=resume_bytes,
         )
 
+        # Initialize approved_plan.json with generated plan so questions are immediately ready
+        APPROVED_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        APPROVED_PLAN_PATH.write_text(
+            json.dumps(final_state["question_plan"], indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
         return {
             "success": True,
             "message": "Interview preparation complete.",
@@ -177,13 +183,14 @@ async def prepare_interview(
 
 @app.get("/api/questions")
 def get_questions():
-    if not APPROVED_PLAN_PATH.exists():
+    plan_path = APPROVED_PLAN_PATH if APPROVED_PLAN_PATH.exists() else Path("output/prep/question_plan.json")
+    if not plan_path.exists():
         raise HTTPException(
             status_code=404,
-            detail="Approved interview plan not found. Please complete preparation first.",
+            detail="Interview plan not found. Please complete preparation first.",
         )
     try:
-        plan = json.loads(APPROVED_PLAN_PATH.read_text(encoding="utf-8"))
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
         return {"questions": plan.get("questions", [])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load questions: {e}")

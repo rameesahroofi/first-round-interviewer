@@ -376,7 +376,7 @@ function App() {
 
   useEffect(() => {
     if (!prepDone) return;
-    fetch("http://localhost:8000/api/questions")
+    fetch("http://127.0.0.1:8000/api/questions")
       .then((r) => r.json())
       .then((data) => setQuestions(data.questions ?? []))
       .catch(console.error);
@@ -650,7 +650,7 @@ function App() {
       form.append("jd_text", jdText);
       form.append("resume_file", resumeFile);
 
-      const resp = await fetch("http://localhost:8000/api/prepare", {
+      const resp = await fetch("http://127.0.0.1:8000/api/prepare", {
         method: "POST",
         body: form,
       });
@@ -660,6 +660,9 @@ function App() {
       }
       const data = await resp.json();
       setResumeSummary(data.resume_summary ?? {});
+      if (data.question_plan?.questions) {
+        setQuestions(data.question_plan.questions);
+      }
       setPrepDone(true);
     } catch (e: unknown) {
       setPrepError((e as Error).message ?? "Preparation failed. Check backend.");
@@ -695,7 +698,7 @@ function App() {
     // Connect to LiveKit room for real-time voice interview
     try {
       const candidateName = (resumeSummary as { name?: string }).name || "Candidate";
-      const tokenResp = await fetch("http://localhost:8000/api/livekit-token", {
+      const tokenResp = await fetch("http://127.0.0.1:8000/api/livekit-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidate_name: candidateName }),
@@ -769,7 +772,7 @@ function App() {
 
     let evaluation: Record<string, unknown> | undefined;
     try {
-      const resp = await fetch("http://localhost:8000/api/evaluate-code", {
+      const resp = await fetch("http://127.0.0.1:8000/api/evaluate-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -829,18 +832,30 @@ function App() {
     await submitInterviewEnd();
   };
 
-  // Submit the interview end via /api/finish-interview (transcript-derived answers)
+  // Submit the interview end via /api/answers
   const submitInterviewEnd = async () => {
     stopProctoring();
+    const updated = [...answers];
+    if (answer) updated[currentQuestion] = answer;
+
+    const submission = {
+      answers: questions.map((q, i) => ({
+        question_id: q.id,
+        question: q.question,
+        category: q.category,
+        competency: q.competency,
+        candidate_answer: updated[i] || "Answer discussed during interview.",
+      })),
+      code_submissions: codeSubmissions,
+      integrity_flags: integrityFlags,
+      flagged_for_review: flaggedForReview,
+    };
+
     try {
-      const resp = await fetch("http://127.0.0.1:8000/api/finish-interview", {
+      const resp = await fetch("http://127.0.0.1:8000/api/answers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code_submissions: codeSubmissions,
-          integrity_flags: integrityFlags,
-          flagged_for_review: flaggedForReview,
-        }),
+        body: JSON.stringify(submission),
       });
       if (!resp.ok) throw new Error(`Failed to submit: ${resp.status}`);
       const data = await resp.json();
@@ -849,7 +864,7 @@ function App() {
       alert(`Submission failed: ${(e as Error).message}`);
     }
 
-    // Disconnect LiveKit
+    // Disconnect LiveKit if connected
     if (livekitRoomRef.current) {
       try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
       livekitRoomRef.current = null;
@@ -894,7 +909,7 @@ function App() {
     setLinkedinError("");
     setLinkedinResult(null);
     try {
-      const resp = await fetch("http://localhost:8000/api/linkedin", {
+      const resp = await fetch("http://127.0.0.1:8000/api/linkedin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profile_text: linkedinText }),
@@ -922,7 +937,7 @@ function App() {
       const form = new FormData();
       form.append("resume_file", cvFile);
       form.append("jd_text", cvJdText);
-      const resp = await fetch("http://localhost:8000/api/cv-rate", {
+      const resp = await fetch("http://127.0.0.1:8000/api/cv-rate", {
         method: "POST",
         body: form,
       });

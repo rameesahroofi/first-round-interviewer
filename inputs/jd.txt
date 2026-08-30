@@ -1,0 +1,27 @@
+Job Title: Junior Software & Security Engineer
+Company: CloudSecure Innovations
+Location: Remote / Hybrid
+Experience Level: 0-2 Years (Entry-Level / Early Career)
+
+About the Role:
+We are seeking a talented Junior Software Engineer with a passion for web development and software security to join our core product engineering team. You will assist in developing high-throughput web services, writing maintainable Python code, building intuitive frontends, and ensuring the architectural security of our platforms.
+
+Key Responsibilities:
+- Design, implement, and maintain robust web applications and RESTful APIs using Python and modern web technologies.
+- Implement security best practices across our stack, including input validation, session management, authorization controls, and protection against common vulnerabilities (SQL injection, XSS, CSRF).
+- Write clean, modular, and well-tested code in Python and C++ where performance is critical.
+- Collaborate with senior engineers on system design, database modeling, and code reviews.
+- Investigate and troubleshoot security and performance bottlenecks.
+
+Requirements:
+- Bachelor's degree (in progress or completed) in Computer Science, Cybersecurity, Software Engineering, or related technical field.
+- Strong foundational programming skills in Python and C++.
+- Solid understanding of web architectures, HTTP protocols, databases, and frontend fundamentals (HTML, CSS, JavaScript).
+- Familiarity with cybersecurity fundamentals, authentication mechanisms, and common web security risks.
+- Excellent analytical problem-solving and debugging capabilities.
+- Strong communication and collaboration skills.
+
+Nice-to-Haves:
+- Experience building marketplace applications or personal web projects.
+- Familiarity with Docker, Linux environments, and Git version control.
+- Knowledge of automated testing (pytest) and continuous integration.
