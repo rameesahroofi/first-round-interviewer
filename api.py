@@ -1,54 +1,42 @@
 import json
+import shutil
+import tempfile
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.agents.answer_evaluation import AnswerEvaluator
+from src.agents.code_evaluator import CodeEvaluator
 from src.agents.final_analyzer import FinalAnalyzer
+from src.agents.linkedin_optimizer import LinkedInOptimizer
+from src.agents.resume_parser import ResumeParser
+from src.agents.resume_rater import ResumeRater
+from src.report_generator import generate_report
+from src.graph import run_pipeline
 
 
 # --------------------------------------------------
 # FILE PATHS
 # --------------------------------------------------
 
-APPROVED_PLAN_PATH = Path(
-    "output/prep/approved_plan.json"
-)
-
-ANSWERS_PATH = Path(
-    "output/prep/answers.json"
-)
-
-ANSWER_EVALUATION_PATH = Path(
-    "output/prep/answer_evaluation.json"
-)
-
-FINAL_ANALYSIS_PATH = Path(
-    "output/prep/final_analysis.json"
-)
-
-JD_PATH = Path(
-    "output/prep/jd.json"
-)
-
-RESUME_PATH = Path(
-    "output/prep/resume.json"
-)
-
-GAP_ANALYSIS_PATH = Path(
-    "output/prep/gap_analysis.json"
-)
+APPROVED_PLAN_PATH = Path("output/prep/approved_plan.json")
+ANSWERS_PATH = Path("output/prep/answers.json")
+ANSWER_EVALUATION_PATH = Path("output/prep/answer_evaluation.json")
+FINAL_ANALYSIS_PATH = Path("output/prep/final_analysis.json")
+FINAL_REPORT_PATH = Path("output/prep/final_report.md")
+JD_PATH = Path("output/prep/jd.json")
+RESUME_PATH = Path("output/prep/resume.json")
+GAP_ANALYSIS_PATH = Path("output/prep/gap_analysis.json")
 
 
 # --------------------------------------------------
 # FASTAPI
 # --------------------------------------------------
 
-app = FastAPI(
-    title="FirstRound API"
-)
+app = FastAPI(title="FirstRound API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,8 +51,26 @@ app.add_middleware(
 
 
 # --------------------------------------------------
-# REQUEST MODEL
+# REQUEST MODELS
 # --------------------------------------------------
+
+class CodeSubmission(BaseModel):
+    question_id: int
+    question: str
+    language: str
+    code: str
+    stdout: str = ""
+    stderr: str = ""
+    competency: str = ""
+    evaluation: Optional[dict] = None
+
+
+class IntegrityFlag(BaseModel):
+    type: str
+    timestamp: str
+    duration: float = 0.0
+    details: str = ""
+
 
 class InterviewAnswer(BaseModel):
     question_id: int
@@ -76,6 +82,75 @@ class InterviewAnswer(BaseModel):
 
 class InterviewSubmission(BaseModel):
     answers: list[InterviewAnswer]
+    code_submissions: list[CodeSubmission] = []
+    integrity_flags: list[IntegrityFlag] = []
+    flagged_for_review: bool = False
+
+
+class LinkedInRequest(BaseModel):
+    profile_text: str
+
+
+class CodeEvalRequest(BaseModel):
+    question_id: int
+    question: str
+    language: str
+    code: str
+    stdout: str = ""
+    stderr: str = ""
+    competency: str = ""
+
+
+# --------------------------------------------------
+# PREPARE (LangGraph pipeline)
+# --------------------------------------------------
+
+@app.post("/api/prepare")
+async def prepare_interview(
+    role: str = Form(...),
+    jd_text: str = Form(...),
+    resume_file: UploadFile = File(...),
+):
+    """
+    Run the full preparation pipeline:
+    resume_parser -> jd_parser -> gap_analyzer -> question_planner
+    Saves all JSON outputs to output/prep/ and returns the question plan.
+    """
+    if not resume_file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Resume must be a PDF file.")
+
+    if not jd_text.strip():
+        raise HTTPException(status_code=400, detail="Job description text cannot be empty.")
+
+    if not role.strip():
+        raise HTTPException(status_code=400, detail="Role cannot be empty.")
+
+    try:
+        resume_bytes = await resume_file.read()
+
+        final_state = run_pipeline(
+            role=role.strip(),
+            jd_text=jd_text.strip(),
+            resume_bytes=resume_bytes,
+        )
+
+        return {
+            "success": True,
+            "message": "Interview preparation complete.",
+            "question_plan": final_state["question_plan"],
+            "gap_analysis": final_state["gap_analysis"],
+            "resume_summary": {
+                "name": final_state["resume_data"].get("candidate_name", ""),
+                "skills": final_state["resume_data"].get("skills", [])[:10],
+                "experience_count": len(final_state["resume_data"].get("experience", [])),
+                "projects_count": len(final_state["resume_data"].get("projects", [])),
+            },
+        }
+
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=f"Pipeline error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preparation failed: {e}")
 
 
 # --------------------------------------------------
@@ -84,188 +159,107 @@ class InterviewSubmission(BaseModel):
 
 @app.get("/api/questions")
 def get_questions():
-
     if not APPROVED_PLAN_PATH.exists():
-        return {
-            "questions": [],
-            "error": "Approved interview plan not found."
-        }
-
-    try:
-        plan = json.loads(
-            APPROVED_PLAN_PATH.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        return {
-            "questions": plan.get(
-                "questions",
-                []
-            )
-        }
-
-    except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load questions: {e}"
+            status_code=404,
+            detail="Approved interview plan not found. Please complete preparation first.",
         )
+    try:
+        plan = json.loads(APPROVED_PLAN_PATH.read_text(encoding="utf-8"))
+        return {"questions": plan.get("questions", [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load questions: {e}")
 
 
 # --------------------------------------------------
-# SUBMIT INTERVIEW
+# SUBMIT INTERVIEW ANSWERS
 # --------------------------------------------------
 
 @app.post("/api/answers")
-def submit_answers(
-    submission: InterviewSubmission
-):
-
+def submit_answers(submission: InterviewSubmission):
     try:
-
-        # ------------------------------------------
-        # 1. Save the NEW answers
-        # ------------------------------------------
-
-        answers_data = {
-            "answers": [
-                answer.model_dump()
-                for answer in submission.answers
-            ]
-        }
-
-        ANSWERS_PATH.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
+        # 1. Save raw answers
+        answers_data = {"answers": [a.model_dump() for a in submission.answers]}
+        ANSWERS_PATH.parent.mkdir(parents=True, exist_ok=True)
         ANSWERS_PATH.write_text(
-            json.dumps(
-                answers_data,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
+            json.dumps(answers_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        print(f"Saved {len(submission.answers)} interview answers.")
 
-        print(
-            f"Saved {len(submission.answers)} interview answers."
-        )
-
-        # ------------------------------------------
-        # 2. Prepare answers for final analysis
-        # ------------------------------------------
-
+        # 2. Actually evaluate each answer with Gemini (no more stub zeros)
+        evaluator = AnswerEvaluator()
         evaluations = []
 
         for answer_data in submission.answers:
-
-            evaluations.append(
-                {
-                    "question_id": answer_data.question_id,
-                    "question": answer_data.question,
-                    "competency": answer_data.competency,
-                    "candidate_answer": answer_data.candidate_answer,
-                    "evaluation": {
-                        "score": 0,
-                        "relevance": 0,
-                        "technical_quality": 0,
-                        "communication": 0,
-                        "strengths": [],
-                        "weaknesses": [],
-                        "feedback": "",
-                        "recommendation": ""
-                    }
+            # Skip evaluation for empty answers or candidate_questions category
+            if not answer_data.candidate_answer.strip() or answer_data.category == "candidate_questions":
+                evaluation = {
+                    "score": 0, "relevance": 0, "technical_quality": 0,
+                    "communication": 0, "strengths": [], "weaknesses": [],
+                    "feedback": "No answer provided." if not answer_data.candidate_answer.strip() else "Candidate question round - not scored.",
+                    "recommendation": "N/A"
                 }
-            )
+            else:
+                print(f"Evaluating question {answer_data.question_id}...")
+                evaluation = evaluator.evaluate(
+                    question=answer_data.question,
+                    answer=answer_data.candidate_answer,
+                    competency=answer_data.competency,
+                )
 
-        # ------------------------------------------
-        # 3. Save answer evaluation
-        # ------------------------------------------
+            evaluations.append({
+                "question_id": answer_data.question_id,
+                "question": answer_data.question,
+                "category": answer_data.category,
+                "competency": answer_data.competency,
+                "candidate_answer": answer_data.candidate_answer,
+                "evaluation": evaluation,
+            })
 
-        answer_evaluation = {
-            "evaluations": evaluations
-        }
-
+        # 3. Save evaluations
+        answer_evaluation = {"evaluations": evaluations}
         ANSWER_EVALUATION_PATH.write_text(
-            json.dumps(
-                answer_evaluation,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
+            json.dumps(answer_evaluation, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-        # ------------------------------------------
         # 4. Load JD / Resume / Gap Analysis
-        # ------------------------------------------
+        for path in [JD_PATH, RESUME_PATH, GAP_ANALYSIS_PATH]:
+            if not path.exists():
+                raise FileNotFoundError(f"Required file not found: {path}")
 
-        if not JD_PATH.exists():
-            raise FileNotFoundError(
-                f"JD file not found: {JD_PATH}"
-            )
+        jd = json.loads(JD_PATH.read_text(encoding="utf-8"))
+        resume = json.loads(RESUME_PATH.read_text(encoding="utf-8"))
+        gap_analysis = json.loads(GAP_ANALYSIS_PATH.read_text(encoding="utf-8"))
 
-        if not RESUME_PATH.exists():
-            raise FileNotFoundError(
-                f"Resume file not found: {RESUME_PATH}"
-            )
+        # 5. Prepare code submissions for final analysis
+        code_subs = [cs.model_dump() for cs in submission.code_submissions]
+        integrity_flags = [f.model_dump() for f in submission.integrity_flags]
 
-        if not GAP_ANALYSIS_PATH.exists():
-            raise FileNotFoundError(
-                f"Gap analysis not found: {GAP_ANALYSIS_PATH}"
-            )
-
-        jd = json.loads(
-            JD_PATH.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        resume = json.loads(
-            RESUME_PATH.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        gap_analysis = json.loads(
-            GAP_ANALYSIS_PATH.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        # ------------------------------------------
-        # 5. Generate final analysis
-        # ------------------------------------------
-
+        # 6. Generate final analysis
         analyzer = FinalAnalyzer()
-
         final_analysis = analyzer.analyze(
             jd=jd,
             resume=resume,
             gap_analysis=gap_analysis,
             answer_evaluation=answer_evaluation,
+            code_submissions=code_subs if code_subs else None,
+            integrity_flags=integrity_flags if integrity_flags else None,
+            flagged_for_review=submission.flagged_for_review,
         )
 
-        # ------------------------------------------
-        # 6. Save NEW final analysis
-        # ------------------------------------------
-
+        # 7. Save final analysis
         FINAL_ANALYSIS_PATH.write_text(
-            json.dumps(
-                final_analysis,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
+            json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        print("Final interview analysis generated successfully.")
 
-        print(
-            "Final interview analysis generated successfully."
-        )
-
-        # ------------------------------------------
-        # 7. Return NEW analysis to React
-        # ------------------------------------------
+        # 8. Generate and save human-readable report
+        try:
+            report_md = generate_report(final_analysis)
+            FINAL_REPORT_PATH.write_text(report_md, encoding="utf-8")
+            print("Final interview report markdown generated successfully.")
+        except Exception as err:
+            print(f"Failed to generate report markdown: {err}")
 
         return {
             "success": True,
@@ -274,15 +268,8 @@ def submit_answers(
         }
 
     except Exception as e:
-
-        print(
-            f"Interview evaluation failed: {e}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        print(f"Interview evaluation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --------------------------------------------------
@@ -291,27 +278,80 @@ def submit_answers(
 
 @app.get("/api/analysis")
 def get_analysis():
-
     if not FINAL_ANALYSIS_PATH.exists():
-
-        return {
-            "error": "Final analysis not found."
-        }
-
+        raise HTTPException(status_code=404, detail="Final analysis not found.")
     try:
-
-        return json.loads(
-            FINAL_ANALYSIS_PATH.read_text(
-                encoding="utf-8"
-            )
-        )
-
+        return json.loads(FINAL_ANALYSIS_PATH.read_text(encoding="utf-8"))
     except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read analysis: {e}")
 
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read analysis: {e}"
+
+# --------------------------------------------------
+# EVALUATE CODE (Piston execution result -> Gemini scoring)
+# --------------------------------------------------
+
+@app.post("/api/evaluate-code")
+def evaluate_code(request: CodeEvalRequest):
+    try:
+        evaluator = CodeEvaluator()
+        result = evaluator.evaluate(
+            question=request.question,
+            code=request.code,
+            language=request.language,
+            stdout=request.stdout,
+            stderr=request.stderr,
+            competency=request.competency,
         )
+        return {"success": True, "evaluation": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code evaluation failed: {e}")
+
+
+# --------------------------------------------------
+# LINKEDIN OPTIMIZER
+# --------------------------------------------------
+
+@app.post("/api/linkedin")
+def optimize_linkedin(request: LinkedInRequest):
+    if not request.profile_text.strip():
+        raise HTTPException(status_code=400, detail="Profile text cannot be empty.")
+    try:
+        optimizer = LinkedInOptimizer()
+        result = optimizer.analyze(request.profile_text)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LinkedIn analysis failed: {e}")
+
+
+# --------------------------------------------------
+# CV / RESUME RATER
+# --------------------------------------------------
+
+@app.post("/api/cv-rate")
+async def rate_cv(
+    resume_file: UploadFile = File(...),
+    jd_text: str = Form(default=""),
+):
+    if not resume_file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Resume must be a PDF file.")
+    try:
+        resume_bytes = await resume_file.read()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(resume_bytes)
+            tmp_path = Path(tmp.name)
+
+        parser = ResumeParser()
+        resume_text = parser.extract_text(tmp_path)
+        tmp_path.unlink(missing_ok=True)
+
+        if not resume_text.strip():
+            raise ValueError("No text could be extracted from the PDF.")
+
+        rater = ResumeRater()
+        result = rater.rate(resume_text, jd_text)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CV rating failed: {e}")
 
 
 # --------------------------------------------------
@@ -320,7 +360,4 @@ def get_analysis():
 
 @app.get("/")
 def root():
-
-    return {
-        "message": "FirstRound API is running."
-    }
+    return {"message": "FirstRound API is running."}

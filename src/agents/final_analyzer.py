@@ -1,20 +1,18 @@
-
+﻿"""
+src/agents/final_analyzer.py  -  Updated with code_submissions + integrity sections
+"""
 import json
 import os
 from pathlib import Path
-
 from dotenv import load_dotenv
 from google import genai
-
 
 load_dotenv(override=True)
 
 
 class FinalAnalyzer:
     def __init__(self) -> None:
-        self.client = genai.Client(
-            api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        self.client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
     def analyze(
         self,
@@ -22,13 +20,29 @@ class FinalAnalyzer:
         resume: dict,
         gap_analysis: dict,
         answer_evaluation: dict,
+        code_submissions: list | None = None,
+        integrity_flags: list | None = None,
+        flagged_for_review: bool = False,
     ) -> dict:
 
-        prompt = f"""
-You are an AI interview performance analyzer.
+        code_section = ""
+        if code_submissions:
+            code_section = f"""
+CODE SUBMISSIONS (coding questions answered):
+{json.dumps(code_submissions, indent=2)}
+"""
 
-Analyze the candidate's complete interview performance using
-the information provided below.
+        integrity_section = ""
+        if integrity_flags:
+            integrity_section = f"""
+INTEGRITY FLAGS (proctoring events):
+flagged_for_review: {flagged_for_review}
+{json.dumps(integrity_flags, indent=2)}
+"""
+
+        prompt = f"""You are an AI interview performance analyzer.
+
+Analyze the candidate's complete interview performance.
 
 JOB DESCRIPTION:
 {json.dumps(jd, indent=2)}
@@ -41,11 +55,10 @@ GAP ANALYSIS:
 
 ANSWER EVALUATIONS:
 {json.dumps(answer_evaluation, indent=2)}
+{code_section}
+{integrity_section}
 
-Produce a final structured assessment of the candidate.
-
-Return ONLY valid JSON using this structure:
-
+Return ONLY valid JSON (no markdown fences):
 {{
     "overall_score": 0,
     "technical_score": 0,
@@ -57,112 +70,75 @@ Return ONLY valid JSON using this structure:
     "communication_gaps": [],
     "improvement_plan": [],
     "summary": "",
-    "recommendation": ""
+    "recommendation": "",
+    "code_performance": {{
+        "attempted": 0,
+        "passed": 0,
+        "average_score": 0,
+        "notes": ""
+    }},
+    "integrity": {{
+        "flagged_for_review": false,
+        "flag_count": 0,
+        "flags": [],
+        "notes": ""
+    }}
 }}
 
 Rules:
-
-- overall_score = overall interview performance from 0 to 100.
-- technical_score = technical performance from 0 to 100.
-- communication_score = communication quality from 0 to 100.
-- jd_alignment_score = how well the candidate matches the job description from 0 to 100.
-- strengths = specific strengths demonstrated by the candidate.
-- weaknesses = specific weaknesses demonstrated during the interview.
-- technical_gaps = technical areas that need improvement.
-- communication_gaps = communication areas that need improvement.
-- improvement_plan = practical actions the candidate should take.
-- summary = concise overall assessment.
-- recommendation must be one of:
-  "Strong Candidate"
-  "Good Candidate"
-  "Needs Improvement"
-  "Not Recommended"
-
-Important:
-- Base the analysis only on the information provided.
-- Do not invent skills, experience, or achievements.
-- Do not assume that a skill exists just because it appears in the JD.
-- Consider both the resume and actual interview performance.
-- Use the answer evaluations to determine interview performance.
-- Return JSON only.
-"""
+- overall_score: 0-100 based on ALL evaluated dimensions
+- technical_score: consider both verbal answers AND code submissions if present
+- communication_score: clarity, structure, completeness
+- jd_alignment_score: how well candidate matches the JD
+- recommendation: one of "Strong Candidate", "Good Candidate", "Needs Improvement", "Not Recommended"
+- code_performance: summarize code submission results (0s if no code submissions)
+- integrity: always include; set flagged_for_review and populate flags if proctoring data present
+- Base analysis only on provided information. Do not invent skills or achievements.
+- Return JSON only."""
 
         response = self.client.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-            },
+            config={"response_mime_type": "application/json"},
         )
 
-        return json.loads(response.text)
+        result = json.loads(response.text)
+
+        # Always ensure integrity section reflects submitted flags even if LLM drops it
+        if "integrity" not in result:
+            result["integrity"] = {}
+        result["integrity"]["flagged_for_review"] = flagged_for_review
+        result["integrity"]["flag_count"] = len(integrity_flags or [])
+        result["integrity"].setdefault("flags", integrity_flags or [])
+
+        return result
 
 
 def load_json(path: Path) -> dict:
     if not path.exists():
-        raise FileNotFoundError(
-            f"Required file not found: {path}"
-        )
-
-    return json.loads(
-        path.read_text(encoding="utf-8")
-    )
+        raise FileNotFoundError(f"Required file not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def main() -> None:
+    jd = load_json(Path("output/prep/jd.json"))
+    resume = load_json(Path("output/prep/resume.json"))
+    gap_analysis = load_json(Path("output/prep/gap_analysis.json"))
+    answer_evaluation = load_json(Path("output/prep/answer_evaluation.json"))
 
-    jd = load_json(
-        Path("output/prep/jd.json")
-    )
-
-    resume = load_json(
-        Path("output/prep/resume.json")
-    )
-
-    gap_analysis = load_json(
-        Path("output/prep/gap_analysis.json")
-    )
-
-    answer_evaluation = load_json(
-        Path("output/prep/answer_evaluation.json")
-    )
-
-    analyzer = FinalAnalyzer()
-
-    final_analysis = analyzer.analyze(
+    final_analysis = FinalAnalyzer().analyze(
         jd=jd,
         resume=resume,
         gap_analysis=gap_analysis,
         answer_evaluation=answer_evaluation,
     )
 
-    output_path = Path(
-        "output/prep/final_analysis.json"
-    )
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    output_path.write_text(
-        json.dumps(
-            final_analysis,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
+    out = Path("output/prep/final_analysis.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8")
     print("Final analysis generated successfully.")
-    print(f"Saved to: {output_path}")
-    print()
-    print(json.dumps(
-        final_analysis,
-        indent=2
-    ))
+    print(f"Saved to: {out}")
 
 
 if __name__ == "__main__":
     main()
-

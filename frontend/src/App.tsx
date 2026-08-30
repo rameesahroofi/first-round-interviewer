@@ -1,22 +1,29 @@
-
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import Editor from "@monaco-editor/react";
 import {
-  ArrowRight,
-  CheckCircle2,
-  ChevronRight,
-  Clock3,
-  Code2,
-  FileText,
-  Mic,
-  Play,
-  ShieldCheck,
-  Sparkles,
-  Target,
-  UserRound,
+  ArrowRight, CheckCircle2, ChevronRight, Clock3,
+  Code2, Eye, EyeOff, FileText, Mic, Play, ShieldCheck,
+  Sparkles, Target, UserRound, AlertTriangle,
+  Star, Copy, Check,
 } from "lucide-react";
 import "./App.css";
 
-type Screen = "home" | "interview" | "results";
+// ──────────────────────────────────────────────────────────────────
+// TYPES
+// ──────────────────────────────────────────────────────────────────
+
+type Screen = "home" | "interview" | "results" | "linkedin" | "cv-rater";
+
+type Question = {
+  id: number;
+  category: string;
+  competency: string;
+  question: string;
+  why: string;
+  language?: string | null;
+  starter_code?: string | null;
+  difficulty?: string | null;
+};
 
 type Analysis = {
   overall_score: number;
@@ -30,22 +37,47 @@ type Analysis = {
   improvement_plan: string[];
   summary: string;
   recommendation: string;
+  code_performance?: {
+    attempted: number;
+    passed: number;
+    average_score: number;
+    notes: string;
+  };
+  integrity?: {
+    flagged_for_review: boolean;
+    flag_count: number;
+    flags: IntegrityFlag[];
+    notes: string;
+  };
+};
+
+type CodeSubmission = {
+  question_id: number;
+  question: string;
+  language: string;
+  code: string;
+  stdout: string;
+  stderr: string;
+  competency: string;
+  evaluation?: Record<string, unknown>;
+};
+
+type IntegrityFlag = {
+  type: string;
+  timestamp: string;
+  duration: number;
+  details: string;
 };
 
 type SpeechResult = {
-  0: {
-    transcript: string;
-  };
+  0: { transcript: string };
   isFinal: boolean;
   length: number;
 };
 
 type SpeechRecognitionEventLike = Event & {
   resultIndex: number;
-  results: {
-    [index: number]: SpeechResult;
-    length: number;
-  };
+  results: { [index: number]: SpeechResult; length: number };
 };
 
 type SpeechRecognitionInstance = {
@@ -57,7 +89,7 @@ type SpeechRecognitionInstance = {
   abort: () => void;
   onstart: (() => void) | null;
   onend: (() => void) | null;
-  onerror: ((event: any) => void) | null;
+  onerror: ((event: unknown) => void) | null;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
 };
 
@@ -70,858 +102,1093 @@ declare global {
   }
 }
 
+const ROLE_OPTIONS = [
+  "Software Engineer",
+  "Backend Engineer",
+  "Frontend Engineer",
+  "Full Stack Engineer",
+  "Data Engineer",
+  "ML Engineer / AI Engineer",
+  "DevOps Engineer",
+  "Data Scientist",
+  "Product Manager",
+  "Data Analyst",
+  "Business Analyst",
+  "Marketing Manager",
+  "UX Designer",
+  "Security Engineer",
+  "Cloud Engineer",
+  "Other (type your own)",
+];
+
+// ──────────────────────────────────────────────────────────────────
+// PISTON CODE RUNNER (free, no API key)
+// ──────────────────────────────────────────────────────────────────
+
+async function runCodeWithPiston(
+  language: string,
+  code: string
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const langMap: Record<string, { language: string; version: string }> = {
+    python: { language: "python", version: "3.10.0" },
+    javascript: { language: "javascript", version: "18.15.0" },
+    typescript: { language: "typescript", version: "5.0.3" },
+    java: { language: "java", version: "15.0.2" },
+    kotlin: { language: "kotlin", version: "1.8.20" },
+    cpp: { language: "c++", version: "10.2.0" },
+    c: { language: "c", version: "10.2.0" },
+    go: { language: "go", version: "1.16.2" },
+    rust: { language: "rust", version: "1.50.0" },
+    ruby: { language: "ruby", version: "3.0.1" },
+    sql: { language: "sqlite3", version: "3.36.0" },
+  };
+  const pistonLang = langMap[language.toLowerCase()] ?? { language, version: "*" };
+  const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      language: pistonLang.language,
+      version: pistonLang.version,
+      files: [{ content: code }],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Piston API error: ${resp.status}`);
+  const data = await resp.json();
+  return {
+    stdout: data.run?.stdout ?? "",
+    stderr: data.run?.stderr ?? "",
+    exitCode: data.run?.code ?? 0,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// COPY BUTTON helper
+// ──────────────────────────────────────────────────────────────────
+
+
+function LinkedinIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z" />
+      <rect width="4" height="12" x="2" y="9" />
+      <circle cx="4" cy="4" r="2" />
+    </svg>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="copy-btn"
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      {copied ? <Check size={14} /> : <Copy size={14} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// SCORE BADGE helper
+// ──────────────────────────────────────────────────────────────────
+
+function ScoreBadge({ score }: { score: number }) {
+  const color = score >= 75 ? "score-green" : score >= 50 ? "score-yellow" : "score-red";
+  return <span className={`score-badge ${color}`}>{score}/100</span>;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// MAIN APP
+// ──────────────────────────────────────────────────────────────────
+
 function App() {
   const [screen, setScreen] = useState<Screen>("home");
-  const [currentQuestion, setCurrentQuestion] = useState(0);
 
+  // ── Home / prepare state
+  const [selectedRole, setSelectedRole] = useState("Software Engineer");
+  const [customRole, setCustomRole] = useState("");
+  const [jdText, setJdText] = useState("");
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [prepError, setPrepError] = useState("");
+  const [prepDone, setPrepDone] = useState(false);
+  const [resumeSummary, setResumeSummary] = useState<Record<string, unknown>>({});
+
+  // ── Interview state
+  const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answer, setAnswer] = useState("");
   const [answers, setAnswers] = useState<string[]>([]);
-
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [timeLeft, setTimeLeft] = useState(30 * 60);
 
-  const [questions, setQuestions] = useState<any[]>([]);
+  // ── Code editor state
+  const [codeMap, setCodeMap] = useState<Record<number, string>>({});
+  const [runOutput, setRunOutput] = useState<{ stdout: string; stderr: string } | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [codeSubmissions, setCodeSubmissions] = useState<CodeSubmission[]>([]);
 
+  // ── Proctoring state
+  const [proctoringEnabled, setProctoringEnabled] = useState(false);
+  const [cameraGranted, setCameraGranted] = useState(false);
+  const [, setStrikeCount] = useState(0);
+  const [integrityFlags, setIntegrityFlags] = useState<IntegrityFlag[]>([]);
+  const [flaggedForReview, setFlaggedForReview] = useState(false);
+  const [proctoringWarning, setProctoringWarning] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const proctoringIntervalRef = useRef<number | null>(null);
+  const faceDetectorRef = useRef<unknown>(null);
+  const tabHiddenAtRef = useRef<number | null>(null);
+
+  // ── Analysis state
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
 
-  const [timeLeft, setTimeLeft] = useState(30 * 60);
+  // ── LinkedIn state
+  const [linkedinUrl, setLinkedinUrl] = useState("");
+  const [linkedinText, setLinkedinText] = useState("");
+  const [linkedinLoading, setLinkedinLoading] = useState(false);
+  const [linkedinResult, setLinkedinResult] = useState<Record<string, unknown> | null>(null);
+  const [linkedinError, setLinkedinError] = useState("");
 
-  // Speech recognition reference
-  const recognitionRef =
-    useRef<SpeechRecognitionInstance | null>(null);
+  // ── CV rater state
+  const [cvFile, setCvFile] = useState<File | null>(null);
+  const [cvJdText, setCvJdText] = useState("");
+  const [cvLoading, setCvLoading] = useState(false);
+  const [cvResult, setCvResult] = useState<Record<string, unknown> | null>(null);
+  const [cvError, setCvError] = useState("");
 
-  // Stores the confirmed/final speech text.
-  // This prevents Chrome interim results from being duplicated.
+  // Speech refs
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const finalTranscriptRef = useRef("");
-
-  // Keeps the latest answer available immediately,
-  // even before React updates the state.
   const answerRef = useRef("");
 
-  // --------------------------------------------------
+  const effectiveRole = selectedRole === "Other (type your own)" ? customRole : selectedRole;
+
+  // ──────────────────────────────────────────────────────────────────
   // LOAD QUESTIONS
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    if (!prepDone) return;
     fetch("http://localhost:8000/api/questions")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Failed to load questions");
-        }
+      .then((r) => r.json())
+      .then((data) => setQuestions(data.questions ?? []))
+      .catch(console.error);
+  }, [prepDone]);
 
-        return response.json();
-      })
-      .then((data) => {
-        setQuestions(data.questions || []);
-      })
-      .catch((error) => {
-        console.error(
-          "Failed to load interview questions:",
-          error
-        );
-      });
-  }, []);
-
-  // --------------------------------------------------
-  // LOAD FINAL ANALYSIS
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
+  // LOAD ANALYSIS ON RESULTS SCREEN
+  // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (screen !== "results") {
-      return;
-    }
-
+    if (screen !== "results") return;
+    if (analysis) return;
     setAnalysisLoading(true);
     setAnalysisError("");
-
     fetch("http://127.0.0.1:8000/api/analysis")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(
-            "Failed to load interview analysis"
-          );
-        }
-
-        return response.json();
-      })
-      .then((data) => {
-        console.log("Analysis received:", data);
-        setAnalysis(data);
-      })
-      .catch((error) => {
-        console.error(
-          "Failed to load analysis:",
-          error
-        );
-
-        setAnalysisError(
-          "Unable to load your AI analysis. Please make sure the backend is running."
-        );
-      })
-      .finally(() => {
-        setAnalysisLoading(false);
-      });
+      .then((r) => r.json())
+      .then((data) => setAnalysis(data))
+      .catch(() => setAnalysisError("Unable to load analysis. Make sure the backend is running."))
+      .finally(() => setAnalysisLoading(false));
   }, [screen]);
 
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
   // TIMER
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (screen !== "interview") {
-      return;
-    }
-
+    if (screen !== "interview") return;
     if (timeLeft <= 0) {
       stopRecording();
-
-      alert(
-        "Your 30-minute interview time has ended."
-      );
-
+      alert("Your 30-minute interview time has ended.");
       setScreen("results");
-
       return;
     }
-
-    const timer = window.setInterval(() => {
-      setTimeLeft((previous) => previous - 1);
-    }, 1000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
+    const timer = window.setInterval(() => setTimeLeft((p) => p - 1), 1000);
+    return () => window.clearInterval(timer);
   }, [screen, timeLeft]);
 
-  // --------------------------------------------------
-  // CLEANUP
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
+  // SPEAK QUESTION
+  // ──────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    return () => {
-      window.speechSynthesis.cancel();
-
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch {
-          // Ignore cleanup errors.
-        }
-      }
-    };
+  const speakQuestion = useCallback((text: string) => {
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
   }, []);
 
-  // --------------------------------------------------
-  // CURRENT QUESTION
-  // --------------------------------------------------
-
-  const question = questions[currentQuestion];
-
-  // --------------------------------------------------
-  // TIMER FORMAT
-  // --------------------------------------------------
-
-  const formatTime = (seconds: number) => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-
-    return `${minutes
-      .toString()
-      .padStart(2, "0")}:${remainingSeconds
-      .toString()
-      .padStart(2, "0")}`;
-  };
-
-  // --------------------------------------------------
-  // SPEAK QUESTION
-  // --------------------------------------------------
-
-  const speakQuestion = (questionText: string) => {
-    if (!questionText) {
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-
-    const utterance =
-      new SpeechSynthesisUtterance(questionText);
-
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
-    utterance.volume = 1;
-
-    utterance.onstart = () => {
-      setIsSpeaking(true);
-    };
-
-    utterance.onend = () => {
-      setIsSpeaking(false);
-    };
-
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-    };
-
-    window.speechSynthesis.speak(utterance);
-  };
-
-  // --------------------------------------------------
-  // SPEAK QUESTION WHEN QUESTION CHANGES
-  // --------------------------------------------------
-
   useEffect(() => {
-    if (screen !== "interview") {
-      return;
-    }
-
-    if (!question) {
-      return;
-    }
-
-    // Reset answer for the new question
+    if (screen !== "interview") return;
+    const q = questions[currentQuestion];
+    if (!q) return;
     setAnswer("");
     answerRef.current = "";
     finalTranscriptRef.current = "";
+    setRunOutput(null);
+    const t = window.setTimeout(() => speakQuestion(q.question), 500);
+    return () => { window.clearTimeout(t); window.speechSynthesis.cancel(); setIsSpeaking(false); };
+  }, [screen, currentQuestion, questions, speakQuestion]);
 
-    const timer = window.setTimeout(() => {
-      speakQuestion(question.question);
-    }, 500);
+  // ──────────────────────────────────────────────────────────────────
+  // TAB-SWITCH DETECTION
+  // ──────────────────────────────────────────────────────────────────
 
-    return () => {
-      window.clearTimeout(timer);
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
+  useEffect(() => {
+    if (screen !== "interview") return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        tabHiddenAtRef.current = Date.now();
+      } else if (tabHiddenAtRef.current) {
+        const duration = (Date.now() - tabHiddenAtRef.current) / 1000;
+        tabHiddenAtRef.current = null;
+        addFlag("tab_switch", `Tab hidden for ${duration.toFixed(1)}s`, duration);
+      }
     };
-  }, [screen, currentQuestion]);
 
-  // --------------------------------------------------
-  // START MICROPHONE
-  // --------------------------------------------------
+    const handleBlur = () => {
+      if (!tabHiddenAtRef.current) tabHiddenAtRef.current = Date.now();
+    };
+
+    const handleFocus = () => {
+      if (tabHiddenAtRef.current) {
+        const duration = (Date.now() - tabHiddenAtRef.current) / 1000;
+        tabHiddenAtRef.current = null;
+        if (duration > 2) addFlag("window_blur", `Window out of focus for ${duration.toFixed(1)}s`, duration);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [screen]);
+
+  // ──────────────────────────────────────────────────────────────────
+  // INTEGRITY FLAG SYSTEM
+  // ──────────────────────────────────────────────────────────────────
+
+  const addFlag = useCallback((type: string, details: string, duration = 0) => {
+    const flag: IntegrityFlag = {
+      type,
+      timestamp: new Date().toISOString(),
+      duration,
+      details,
+    };
+
+    setIntegrityFlags((prev) => {
+      const updated = [...prev, flag];
+      const recentStrikes = updated.filter((f) => {
+        const age = (Date.now() - new Date(f.timestamp).getTime()) / 1000 / 60;
+        return age < 10;
+      }).length;
+
+      if (recentStrikes >= 3) {
+        setFlaggedForReview(true);
+        setProctoringWarning("⚠️ Interview flagged for review due to repeated violations.");
+      } else {
+        setProctoringWarning(`⚠️ Warning: ${details} (Strike ${recentStrikes}/3)`);
+        setTimeout(() => setProctoringWarning(""), 8000);
+      }
+      return updated;
+    });
+
+    setStrikeCount((p) => p + 1);
+  }, []);
+
+  // ──────────────────────────────────────────────────────────────────
+  // WEBCAM PROCTORING (MediaPipe Tasks Vision)
+  // ──────────────────────────────────────────────────────────────────
+
+  const startProctoring = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      streamRef.current = stream;
+      setCameraGranted(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      // Dynamically import MediaPipe to avoid SSR issues
+      const { FaceDetector, FilesetResolver } = await import("@mediapipe/tasks-vision");
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+      );
+      const detector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+          delegate: "GPU",
+        },
+        runningMode: "IMAGE",
+        minDetectionConfidence: 0.5,
+      });
+      faceDetectorRef.current = detector;
+
+      let noFaceSince: number | null = null;
+
+      proctoringIntervalRef.current = window.setInterval(() => {
+        if (!canvasRef.current || !videoRef.current || !faceDetectorRef.current) return;
+        const ctx = canvasRef.current.getContext("2d");
+        if (!ctx) return;
+        ctx.drawImage(videoRef.current, 0, 0, 160, 120);
+
+        try {
+          const detections = (faceDetectorRef.current as { detect: (el: HTMLVideoElement) => { detections: unknown[] } }).detect(videoRef.current);
+          const faceCount = detections.detections.length;
+
+          if (faceCount === 0) {
+            if (!noFaceSince) noFaceSince = Date.now();
+            else if (Date.now() - noFaceSince > 5000) {
+              addFlag("no_face", "No face detected for more than 5 seconds", (Date.now() - noFaceSince) / 1000);
+              noFaceSince = null;
+            }
+          } else {
+            noFaceSince = null;
+            if (faceCount > 1) {
+              addFlag("multiple_faces", `${faceCount} faces detected`, 0);
+            }
+          }
+        } catch {
+          // Detection error — silently continue
+        }
+      }, 1500);
+    } catch {
+      setCameraGranted(false);
+      setProctoringWarning("Camera access denied — proctoring disabled.");
+    }
+  }, [addFlag]);
+
+  const stopProctoring = useCallback(() => {
+    if (proctoringIntervalRef.current) {
+      clearInterval(proctoringIntervalRef.current);
+      proctoringIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (screen !== "interview") {
+      stopProctoring();
+    }
+  }, [screen, stopProctoring]);
+
+  // ──────────────────────────────────────────────────────────────────
+  // SPEECH RECOGNITION
+  // ──────────────────────────────────────────────────────────────────
 
   const startRecording = () => {
-    if (isRecording) {
-      return;
-    }
-
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      alert(
-        "Speech recognition is not supported in this browser. Please use Google Chrome."
-      );
-
-      return;
-    }
-
-    // Stop AI voice before microphone starts
+    if (isRecording) return;
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SR) { alert("Speech recognition not supported. Use Chrome."); return; }
     window.speechSynthesis.cancel();
     setIsSpeaking(false);
-
-    // Make sure an old recognition instance is gone
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch {
-        // Ignore
-      }
-    }
-
-    const recognition = new SpeechRecognition();
-
+    if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* ignore */ } }
+    const recognition = new SR();
     recognition.continuous = true;
-
-    // IMPORTANT:
-    // We use interim results only for display.
-    // They are NEVER permanently appended.
     recognition.interimResults = true;
-
     recognition.lang = "en-US";
-
-    // Start with whatever was already typed/spoken
-    finalTranscriptRef.current =
-      answerRef.current.trim();
-
-    recognition.onstart = () => {
-      console.log("Microphone started.");
-      setIsRecording(true);
-    };
-
-    recognition.onresult = (
-      event: SpeechRecognitionEventLike
-    ) => {
-      let newFinalText = "";
-      let currentInterimText = "";
-
-      // IMPORTANT:
-      // Only process results from resultIndex onward.
-      // This prevents Chrome from sending old results again.
-      for (
-        let i = event.resultIndex;
-        i < event.results.length;
-        i++
-      ) {
+    finalTranscriptRef.current = answerRef.current.trim();
+    recognition.onstart = () => setIsRecording(true);
+    recognition.onresult = (event: SpeechRecognitionEventLike) => {
+      let newFinal = "";
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-
-        if (!result || result.length === 0) {
-          continue;
-        }
-
-        const transcript =
-          result[0]?.transcript?.trim() || "";
-
-        if (!transcript) {
-          continue;
-        }
-
-        if (result.isFinal) {
-          newFinalText +=
-            (newFinalText ? " " : "") +
-            transcript;
-        } else {
-          currentInterimText +=
-            (currentInterimText ? " " : "") +
-            transcript;
-        }
+        if (!result || result.length === 0) continue;
+        const text = result[0]?.transcript?.trim() ?? "";
+        if (!text) continue;
+        if (result.isFinal) newFinal += (newFinal ? " " : "") + text;
+        else interim += (interim ? " " : "") + text;
       }
-
-      // Only permanently add FINAL speech.
-      if (newFinalText) {
-        finalTranscriptRef.current =
-          `${finalTranscriptRef.current} ${newFinalText}`
-            .trim();
-      }
-
-      // Show:
-      // confirmed text + current temporary speech
-      const displayText =
-        `${finalTranscriptRef.current} ${
-          currentInterimText || ""
-        }`.trim();
-
-      answerRef.current = displayText;
-      setAnswer(displayText);
+      if (newFinal) finalTranscriptRef.current = `${finalTranscriptRef.current} ${newFinal}`.trim();
+      const display = `${finalTranscriptRef.current} ${interim}`.trim();
+      answerRef.current = display;
+      setAnswer(display);
     };
-
-    recognition.onerror = (event: any) => {
-      console.error(
-        "Speech recognition error:",
-        event
-      );
-
-      if (
-        event?.error === "not-allowed" ||
-        event?.error === "permission-denied"
-      ) {
-        alert(
-          "Microphone permission was denied. Please allow microphone access in Chrome."
-        );
+    recognition.onerror = (event: unknown) => {
+      const err = (event as { error?: string }).error;
+      if (err === "not-allowed" || err === "permission-denied") {
+        alert("Microphone permission denied.");
       }
-
       setIsRecording(false);
     };
-
     recognition.onend = () => {
-      console.log("Microphone stopped.");
       setIsRecording(false);
-
-      if (
-        recognitionRef.current === recognition
-      ) {
-        recognitionRef.current = null;
-      }
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
     };
-
     recognitionRef.current = recognition;
-
-    try {
-      recognition.start();
-    } catch (error) {
-      console.error(
-        "Could not start microphone:",
-        error
-      );
-
-      setIsRecording(false);
-      recognitionRef.current = null;
-    }
+    try { recognition.start(); } catch { setIsRecording(false); recognitionRef.current = null; }
   };
 
-  // --------------------------------------------------
-  // STOP MICROPHONE
-  // --------------------------------------------------
-
   const stopRecording = () => {
-    const recognition =
-      recognitionRef.current;
-
-    if (!recognition) {
-      setIsRecording(false);
-      return;
-    }
-
-    try {
-      recognition.stop();
-    } catch {
-      // Ignore if already stopped.
-    }
-
+    if (!recognitionRef.current) { setIsRecording(false); return; }
+    try { recognitionRef.current.stop(); } catch { /* ignore */ }
     recognitionRef.current = null;
     setIsRecording(false);
   };
 
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
+  // PREPARE (call /api/prepare)
+  // ──────────────────────────────────────────────────────────────────
+
+  const handlePrepare = async () => {
+    if (!resumeFile) { setPrepError("Please upload a resume PDF."); return; }
+    if (!jdText.trim()) { setPrepError("Please paste the job description."); return; }
+    if (!effectiveRole.trim()) { setPrepError("Please enter your role."); return; }
+
+    setIsPreparing(true);
+    setPrepError("");
+    try {
+      const form = new FormData();
+      form.append("role", effectiveRole);
+      form.append("jd_text", jdText);
+      form.append("resume_file", resumeFile);
+
+      const resp = await fetch("http://localhost:8000/api/prepare", {
+        method: "POST",
+        body: form,
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail ?? "Preparation failed");
+      }
+      const data = await resp.json();
+      setResumeSummary(data.resume_summary ?? {});
+      setPrepDone(true);
+    } catch (e: unknown) {
+      setPrepError((e as Error).message ?? "Preparation failed. Check backend.");
+    } finally {
+      setIsPreparing(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────
   // START INTERVIEW
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
 
   const startInterview = () => {
-    if (questions.length === 0) {
-      alert(
-        "Interview questions are still loading. Please try again."
-      );
-
-      return;
-    }
-
+    if (questions.length === 0) { alert("Questions not loaded yet."); return; }
     window.speechSynthesis.cancel();
     stopRecording();
-
     setCurrentQuestion(0);
-
     setAnswer("");
     answerRef.current = "";
-
     setAnswers([]);
-
     setAnalysis(null);
     setAnalysisError("");
-
     setTimeLeft(30 * 60);
-
     finalTranscriptRef.current = "";
-
+    setIntegrityFlags([]);
+    setFlaggedForReview(false);
+    setStrikeCount(0);
+    setCodeSubmissions([]);
+    setCodeMap({});
+    if (proctoringEnabled) startProctoring();
     setScreen("interview");
   };
 
-  // --------------------------------------------------
-  // NEXT / FINISH INTERVIEW
-  // --------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
+  // CODE: RUN + SUBMIT
+  // ──────────────────────────────────────────────────────────────────
 
-  const nextQuestion = async () => {
-    // IMPORTANT:
-    // Read from answerRef because it contains
-    // the newest microphone text immediately.
-    const latestAnswer =
-      answerRef.current || answer;
+  const question = questions[currentQuestion];
 
-    // Stop microphone AFTER getting latest answer
-    stopRecording();
-
-    window.speechSynthesis.cancel();
-
-    const updatedAnswers = [...answers];
-
-    updatedAnswers[currentQuestion] =
-      latestAnswer;
-
-    setAnswers(updatedAnswers);
-
-    // ------------------------------------------------
-    // NEXT QUESTION
-    // ------------------------------------------------
-
-    if (
-      currentQuestion <
-      questions.length - 1
-    ) {
-      const nextIndex =
-        currentQuestion + 1;
-
-      setCurrentQuestion(nextIndex);
-
-      const nextAnswer =
-        updatedAnswers[nextIndex] || "";
-
-      setAnswer(nextAnswer);
-      answerRef.current = nextAnswer;
-
-      finalTranscriptRef.current =
-        nextAnswer;
-
-      return;
-    }
-
-    // ------------------------------------------------
-    // FINAL QUESTION
-    // ------------------------------------------------
-
-    console.log(
-      "Final question reached."
-    );
-
-    const submission = {
-      answers: questions.map(
-        (question, index) => ({
-          question_id: question.id,
-          question: question.question,
-          category: question.category,
-          competency: question.competency,
-          candidate_answer:
-            updatedAnswers[index] || "",
-        })
-      ),
-    };
-
-    console.log(
-      "Submitting interview answers:",
-      submission
-    );
-
+  const handleRunCode = async () => {
+    if (!question?.language) return;
+    const code = codeMap[question.id] ?? question.starter_code ?? "";
+    setIsRunning(true);
+    setRunOutput(null);
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/api/answers",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify(
-            submission
-          ),
-        }
-      );
-
-      console.log(
-        "Backend response status:",
-        response.status
-      );
-
-      if (!response.ok) {
-        const errorText =
-          await response.text();
-
-        console.error(
-          "Backend error:",
-          errorText
-        );
-
-        throw new Error(
-          `Failed to submit interview: ${response.status}`
-        );
-      }
-
-      const data =
-        await response.json();
-
-      console.log(
-        "Interview submission response:",
-        data
-      );
-
-      // If backend directly returns analysis,
-      // use it immediately.
-      if (data.analysis) {
-        setAnalysis(data.analysis);
-      }
-
-      // Move to results screen.
-      setScreen("results");
-    } catch (error) {
-      console.error(
-        "Failed to submit interview:",
-        error
-      );
-
-      alert(
-        "There was a problem submitting your interview. Please make sure the backend is running on port 8000."
-      );
+      const result = await runCodeWithPiston(question.language, code);
+      setRunOutput(result);
+    } catch (e: unknown) {
+      setRunOutput({ stdout: "", stderr: (e as Error).message });
+    } finally {
+      setIsRunning(false);
     }
   };
 
-  // --------------------------------------------------
+  const handleSubmitCode = async () => {
+    if (!question) return;
+    const code = codeMap[question.id] ?? question.starter_code ?? "";
+    const lang = question.language ?? "python";
+    const stdout = runOutput?.stdout ?? "";
+    const stderr = runOutput?.stderr ?? "";
+
+    let evaluation: Record<string, unknown> | undefined;
+    try {
+      const resp = await fetch("http://localhost:8000/api/evaluate-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question_id: question.id,
+          question: question.question,
+          language: lang,
+          code,
+          stdout,
+          stderr,
+          competency: question.competency,
+        }),
+      });
+      if (resp.ok) {
+        const d = await resp.json();
+        evaluation = d.evaluation;
+      }
+    } catch { /* non-blocking */ }
+
+    const sub: CodeSubmission = {
+      question_id: question.id,
+      question: question.question,
+      language: lang,
+      code,
+      stdout,
+      stderr,
+      competency: question.competency,
+      evaluation,
+    };
+    setCodeSubmissions((prev) => [...prev.filter((s) => s.question_id !== question.id), sub]);
+    alert("Code submitted!");
+  };
+
+  // ──────────────────────────────────────────────────────────────────
+  // NEXT / FINISH QUESTION
+  // ──────────────────────────────────────────────────────────────────
+
+  const nextQuestion = async () => {
+    const latestAnswer = answerRef.current || answer;
+    stopRecording();
+    window.speechSynthesis.cancel();
+    const updated = [...answers];
+    updated[currentQuestion] = latestAnswer;
+    setAnswers(updated);
+
+    if (currentQuestion < questions.length - 1) {
+      const next = currentQuestion + 1;
+      setCurrentQuestion(next);
+      const na = updated[next] ?? "";
+      setAnswer(na);
+      answerRef.current = na;
+      finalTranscriptRef.current = na;
+      return;
+    }
+
+    // Final submission
+    const submission = {
+      answers: questions.map((q, i) => ({
+        question_id: q.id,
+        question: q.question,
+        category: q.category,
+        competency: q.competency,
+        candidate_answer: updated[i] ?? "",
+      })),
+      code_submissions: codeSubmissions,
+      integrity_flags: integrityFlags,
+      flagged_for_review: flaggedForReview,
+    };
+
+    try {
+      const resp = await fetch("http://127.0.0.1:8000/api/answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(submission),
+      });
+      if (!resp.ok) throw new Error(`Failed to submit: ${resp.status}`);
+      const data = await resp.json();
+      if (data.analysis) setAnalysis(data.analysis);
+    } catch (e: unknown) {
+      alert(`Submission failed: ${(e as Error).message}`);
+    }
+
+    stopProctoring();
+    setScreen("results");
+  };
+
+  const formatTime = (s: number) =>
+    `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
+
+  // ──────────────────────────────────────────────────────────────────
+  // LINKEDIN OPTIMIZER
+  // ──────────────────────────────────────────────────────────────────
+
+  const handleLinkedInAnalyze = async () => {
+    if (!linkedinText.trim()) { setLinkedinError("Please paste your LinkedIn profile text."); return; }
+    setLinkedinLoading(true);
+    setLinkedinError("");
+    setLinkedinResult(null);
+    try {
+      const resp = await fetch("http://localhost:8000/api/linkedin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_text: linkedinText }),
+      });
+      if (!resp.ok) throw new Error((await resp.json()).detail);
+      const data = await resp.json();
+      setLinkedinResult(data.result);
+    } catch (e: unknown) {
+      setLinkedinError((e as Error).message);
+    } finally {
+      setLinkedinLoading(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────
+  // CV RATER
+  // ──────────────────────────────────────────────────────────────────
+
+  const handleCvRate = async () => {
+    if (!cvFile) { setCvError("Please upload a resume PDF."); return; }
+    setCvLoading(true);
+    setCvError("");
+    setCvResult(null);
+    try {
+      const form = new FormData();
+      form.append("resume_file", cvFile);
+      form.append("jd_text", cvJdText);
+      const resp = await fetch("http://localhost:8000/api/cv-rate", {
+        method: "POST",
+        body: form,
+      });
+      if (!resp.ok) throw new Error((await resp.json()).detail);
+      const data = await resp.json();
+      setCvResult(data.result);
+    } catch (e: unknown) {
+      setCvError((e as Error).message);
+    } finally {
+      setCvLoading(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────
+  // CLEANUP
+  // ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+      if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* ignore */ } }
+      stopProctoring();
+    };
+  }, [stopProctoring]);
+
+  // ══════════════════════════════════════════════════════════════════
+  // LINKEDIN SCREEN
+  // ══════════════════════════════════════════════════════════════════
+
+  if (screen === "linkedin") {
+    const result = linkedinResult as {
+      overall_score?: number;
+      section_scores?: Record<string, number>;
+      issues?: { section: string; issue: string; severity: string }[];
+      rewrites?: { section: string; original: string; suggested_rewrite: string; reason: string }[];
+      summary?: string;
+    } | null;
+
+    return (
+      <div className="app">
+        <header className="navbar">
+          <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
+            <div className="brand-icon"><Sparkles size={20} /></div>
+            <span>FirstRound</span>
+          </div>
+          <div className="nav-links">
+            <span className="nav-active"><LinkedinIcon size={16} /> LinkedIn Optimizer</span>
+            <span onClick={() => setScreen("cv-rater")} style={{ cursor: "pointer" }}>CV Rater</span>
+            <span onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>Home</span>
+          </div>
+        </header>
+
+        <main className="tool-page">
+          <div className="tool-header">
+            <LinkedinIcon size={36} className="tool-icon" />
+            <h1>LinkedIn Profile Optimizer</h1>
+            <p>Get specific, actionable feedback to improve your LinkedIn profile and stand out to recruiters.</p>
+          </div>
+
+          <div className="tool-card">
+            <label className="field-label">LinkedIn Profile URL (optional — for reference)</label>
+            <input
+              className="text-input"
+              type="url"
+              placeholder="https://linkedin.com/in/yourprofile"
+              value={linkedinUrl}
+              onChange={(e) => setLinkedinUrl(e.target.value)}
+            />
+
+            <label className="field-label" style={{ marginTop: 16 }}>
+              Paste your profile text here <span className="required">*</span>
+            </label>
+            <p className="field-hint">Copy from your LinkedIn profile page or use the "Save to PDF" export and paste the text content.</p>
+            <textarea
+              className="big-textarea"
+              placeholder="Paste your headline, About section, experience bullets, and skills here..."
+              value={linkedinText}
+              onChange={(e) => setLinkedinText(e.target.value)}
+              rows={12}
+            />
+
+            {linkedinError && <div className="error-box">{linkedinError}</div>}
+
+            <button
+              className="primary-button"
+              onClick={handleLinkedInAnalyze}
+              disabled={linkedinLoading}
+            >
+              {linkedinLoading ? "Analyzing..." : "Analyze Profile"}
+              {!linkedinLoading && <ArrowRight size={18} />}
+            </button>
+          </div>
+
+          {result && (
+            <div className="results-section">
+              {result.overall_score !== undefined && (
+                <div className="score-headline">
+                  <span>Overall Profile Score</span>
+                  <ScoreBadge score={result.overall_score} />
+                </div>
+              )}
+
+              {result.section_scores && (
+                <div className="score-grid">
+                  {Object.entries(result.section_scores).map(([section, score]) => (
+                    <div key={section} className="score-card">
+                      <span>{section.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</span>
+                      <strong>{score}</strong>
+                      <small>/ 100</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.issues && result.issues.length > 0 && (
+                <div className="analysis-card">
+                  <h2>Issues Found</h2>
+                  {result.issues.map((issue, i) => (
+                    <div key={i} className={`issue-row severity-${issue.severity}`}>
+                      <AlertTriangle size={15} />
+                      <div>
+                        <strong>{issue.section}</strong>: {issue.issue}
+                        <span className={`severity-badge ${issue.severity}`}>{issue.severity}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.rewrites && result.rewrites.length > 0 && (
+                <div className="analysis-card">
+                  <h2>Suggested Rewrites</h2>
+                  {result.rewrites.map((rw, i) => (
+                    <div key={i} className="rewrite-block">
+                      <div className="rewrite-section-label">{rw.section}</div>
+                      <div className="rewrite-before"><strong>Before:</strong> {rw.original}</div>
+                      <div className="rewrite-after">
+                        <strong>After:</strong> {rw.suggested_rewrite}
+                        <CopyButton text={rw.suggested_rewrite} />
+                      </div>
+                      {rw.reason && <div className="rewrite-reason">{rw.reason}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.summary && (
+                <div className="analysis-card summary-card">
+                  <h2>Summary</h2>
+                  <p>{result.summary}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CV RATER SCREEN
+  // ══════════════════════════════════════════════════════════════════
+
+  if (screen === "cv-rater") {
+    const result = cvResult as {
+      overall_score?: number;
+      ats_score?: number;
+      bullet_quality_score?: number;
+      structure_score?: number;
+      jd_alignment_score?: number | null;
+      issues?: { category: string; issue: string; example: string; severity: string }[];
+      rewrites?: { original: string; improved: string; reason: string }[];
+      strengths?: string[];
+      summary?: string;
+    } | null;
+
+    return (
+      <div className="app">
+        <header className="navbar">
+          <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
+            <div className="brand-icon"><Sparkles size={20} /></div>
+            <span>FirstRound</span>
+          </div>
+          <div className="nav-links">
+            <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}>LinkedIn Optimizer</span>
+            <span className="nav-active"><FileText size={16} /> CV Rater</span>
+            <span onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>Home</span>
+          </div>
+        </header>
+
+        <main className="tool-page">
+          <div className="tool-header">
+            <Star size={36} className="tool-icon" />
+            <h1>CV / Resume Rater</h1>
+            <p>Get an objective score and specific fixes for your resume — optionally targeted to a specific job description.</p>
+          </div>
+
+          <div className="tool-card">
+            <label className="field-label">Upload Resume PDF <span className="required">*</span></label>
+            <input
+              type="file"
+              accept=".pdf"
+              className="file-input"
+              onChange={(e) => setCvFile(e.target.files?.[0] ?? null)}
+            />
+            {cvFile && <span className="file-name">✓ {cvFile.name}</span>}
+
+            <label className="field-label" style={{ marginTop: 16 }}>Target Job Description (optional — for alignment scoring)</label>
+            <textarea
+              className="big-textarea"
+              placeholder="Paste job description here for JD-alignment scoring..."
+              value={cvJdText}
+              onChange={(e) => setCvJdText(e.target.value)}
+              rows={6}
+            />
+
+            {cvError && <div className="error-box">{cvError}</div>}
+
+            <button
+              className="primary-button"
+              onClick={handleCvRate}
+              disabled={cvLoading}
+            >
+              {cvLoading ? "Rating..." : "Rate My CV"}
+              {!cvLoading && <ArrowRight size={18} />}
+            </button>
+          </div>
+
+          {result && (
+            <div className="results-section">
+              <div className="score-grid">
+                {[
+                  { label: "Overall", val: result.overall_score },
+                  { label: "ATS Score", val: result.ats_score },
+                  { label: "Bullet Quality", val: result.bullet_quality_score },
+                  { label: "Structure", val: result.structure_score },
+                  ...(result.jd_alignment_score != null
+                    ? [{ label: "JD Alignment", val: result.jd_alignment_score }]
+                    : []),
+                ].map(({ label, val }) => (
+                  <div key={label} className="score-card">
+                    <span>{label}</span>
+                    <strong>{val}</strong>
+                    <small>/ 100</small>
+                  </div>
+                ))}
+              </div>
+
+              {result.strengths && result.strengths.length > 0 && (
+                <div className="analysis-card">
+                  <h2>Strengths</h2>
+                  <ul>{result.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              )}
+
+              {result.issues && result.issues.length > 0 && (
+                <div className="analysis-card">
+                  <h2>Issues Found</h2>
+                  {result.issues.map((issue, i) => (
+                    <div key={i} className={`issue-row severity-${issue.severity}`}>
+                      <AlertTriangle size={15} />
+                      <div>
+                        <strong>[{issue.category}]</strong> {issue.issue}
+                        {issue.example && <div className="issue-example">"{issue.example}"</div>}
+                        <span className={`severity-badge ${issue.severity}`}>{issue.severity}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.rewrites && result.rewrites.length > 0 && (
+                <div className="analysis-card">
+                  <h2>Bullet Rewrites</h2>
+                  {result.rewrites.map((rw, i) => (
+                    <div key={i} className="rewrite-block">
+                      <div className="rewrite-before"><strong>Before:</strong> {rw.original}</div>
+                      <div className="rewrite-after">
+                        <strong>After:</strong> {rw.improved}
+                        <CopyButton text={rw.improved} />
+                      </div>
+                      {rw.reason && <div className="rewrite-reason">{rw.reason}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.summary && (
+                <div className="analysis-card summary-card">
+                  <h2>Summary</h2>
+                  <p>{result.summary}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   // RESULTS SCREEN
-  // --------------------------------------------------
+  // ══════════════════════════════════════════════════════════════════
 
   if (screen === "results") {
     return (
       <div className="app">
         <header className="navbar">
-          <div className="brand">
-            <div className="brand-icon">
-              <Sparkles size={20} />
-            </div>
-
-            <span>FirstRound</span>
-          </div>
-
-          <div className="nav-status">
-            <CheckCircle2 size={18} />
-            Interview completed
-          </div>
+          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
+          <div className="nav-status"><CheckCircle2 size={18} /> Interview completed</div>
         </header>
 
         <main className="results-page">
           <div className="results-header">
-            <div className="success-icon">
-              <CheckCircle2 size={42} />
-            </div>
-
-            <p className="eyebrow">
-              INTERVIEW COMPLETE
-            </p>
-
-            <h1>
-              Your interview is complete.
-            </h1>
-
-            <p>
-              Your responses have been
-              recorded. Your AI-powered
-              performance analysis evaluates
-              technical ability,
-              communication and job alignment.
-            </p>
+            <div className="success-icon"><CheckCircle2 size={42} /></div>
+            <p className="eyebrow">INTERVIEW COMPLETE</p>
+            <h1>Your interview is complete.</h1>
+            <p>Your responses have been recorded. Your AI-powered performance analysis evaluates technical ability, communication and job alignment.</p>
           </div>
 
-          {analysisLoading && (
-            <div className="analysis-loading">
-              <p>
-                Analyzing your interview...
-              </p>
+          {flaggedForReview && (
+            <div className="flag-banner">
+              <AlertTriangle size={20} />
+              <span>This interview has been flagged for review due to integrity violations detected during the session.</span>
             </div>
           )}
 
-          {analysisError && (
-            <div className="analysis-error">
-              <p>{analysisError}</p>
-            </div>
-          )}
+          {analysisLoading && <div className="analysis-loading"><p>Analyzing your interview...</p></div>}
+          {analysisError && <div className="analysis-error"><p>{analysisError}</p></div>}
 
           <div className="score-grid">
-            <div className="score-card">
-              <Target size={22} />
-
-              <span>Overall</span>
-
-              <strong>
-                {analysis
-                  ? analysis.overall_score
-                  : "—"}
-              </strong>
-
-              <small>
-                {analysis
-                  ? "Score out of 100"
-                  : analysisLoading
-                  ? "Loading analysis..."
-                  : "Analysis pending"}
-              </small>
-            </div>
-
-            <div className="score-card">
-              <Code2 size={22} />
-
-              <span>Technical</span>
-
-              <strong>
-                {analysis
-                  ? analysis.technical_score
-                  : "—"}
-              </strong>
-
-              <small>
-                {analysis
-                  ? "Score out of 100"
-                  : analysisLoading
-                  ? "Loading analysis..."
-                  : "Analysis pending"}
-              </small>
-            </div>
-
-            <div className="score-card">
-              <Mic size={22} />
-
-              <span>Communication</span>
-
-              <strong>
-                {analysis
-                  ? analysis.communication_score
-                  : "—"}
-              </strong>
-
-              <small>
-                {analysis
-                  ? "Score out of 100"
-                  : analysisLoading
-                  ? "Loading analysis..."
-                  : "Analysis pending"}
-              </small>
-            </div>
-
-            <div className="score-card">
-              <ShieldCheck size={22} />
-
-              <span>JD Alignment</span>
-
-              <strong>
-                {analysis
-                  ? analysis.jd_alignment_score
-                  : "—"}
-              </strong>
-
-              <small>
-                {analysis
-                  ? "Score out of 100"
-                  : analysisLoading
-                  ? "Loading analysis..."
-                  : "Analysis pending"}
-              </small>
-            </div>
+            {[
+              { icon: <Target size={22} />, label: "Overall", key: "overall_score" },
+              { icon: <Code2 size={22} />, label: "Technical", key: "technical_score" },
+              { icon: <Mic size={22} />, label: "Communication", key: "communication_score" },
+              { icon: <ShieldCheck size={22} />, label: "JD Alignment", key: "jd_alignment_score" },
+            ].map(({ icon, label, key }) => (
+              <div key={key} className="score-card">
+                {icon}
+                <span>{label}</span>
+                <strong>{analysis ? (analysis as Record<string, unknown>)[key] as number : "—"}</strong>
+                <small>{analysis ? "Score out of 100" : analysisLoading ? "Loading..." : "Pending"}</small>
+              </div>
+            ))}
           </div>
 
           {analysis && (
             <div className="analysis-section">
-              <div className="analysis-card">
-                <h2>Strengths</h2>
+              {[
+                { title: "Strengths", key: "strengths" },
+                { title: "Areas to Improve", key: "weaknesses" },
+                { title: "Technical Gaps", key: "technical_gaps" },
+                { title: "Communication Gaps", key: "communication_gaps" },
+                { title: "Improvement Plan", key: "improvement_plan" },
+              ].map(({ title, key }) => {
+                const items = (analysis as Record<string, unknown>)[key] as string[];
+                return (
+                  <div key={key} className="analysis-card">
+                    <h2>{title}</h2>
+                    {items?.length > 0 ? <ul>{items.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>None recorded.</p>}
+                  </div>
+                );
+              })}
 
-                {analysis.strengths?.length >
-                0 ? (
-                  <ul>
-                    {analysis.strengths.map(
-                      (item, index) => (
-                        <li key={index}>
-                          {item}
-                        </li>
-                      )
-                    )}
-                  </ul>
-                ) : (
-                  <p>
-                    No strengths recorded.
-                  </p>
-                )}
-              </div>
+              {analysis.code_performance && analysis.code_performance.attempted > 0 && (
+                <div className="analysis-card">
+                  <h2>Code Performance</h2>
+                  <div className="code-perf-row">
+                    <span>Attempted: <strong>{analysis.code_performance.attempted}</strong></span>
+                    <span>Passed: <strong>{analysis.code_performance.passed}</strong></span>
+                    <span>Avg Score: <strong>{analysis.code_performance.average_score}/100</strong></span>
+                  </div>
+                  {analysis.code_performance.notes && <p>{analysis.code_performance.notes}</p>}
+                </div>
+              )}
 
-              <div className="analysis-card">
-                <h2>Areas to Improve</h2>
-
-                {analysis.weaknesses?.length >
-                0 ? (
-                  <ul>
-                    {analysis.weaknesses.map(
-                      (item, index) => (
-                        <li key={index}>
-                          {item}
-                        </li>
-                      )
-                    )}
-                  </ul>
-                ) : (
-                  <p>
-                    No weaknesses recorded.
-                  </p>
-                )}
-              </div>
-
-              <div className="analysis-card">
-                <h2>Technical Gaps</h2>
-
-                {analysis.technical_gaps?.length >
-                0 ? (
-                  <ul>
-                    {analysis.technical_gaps.map(
-                      (item, index) => (
-                        <li key={index}>
-                          {item}
-                        </li>
-                      )
-                    )}
-                  </ul>
-                ) : (
-                  <p>
-                    No technical gaps recorded.
-                  </p>
-                )}
-              </div>
-
-              <div className="analysis-card">
-                <h2>
-                  Communication Gaps
-                </h2>
-
-                {analysis.communication_gaps?.length >
-                0 ? (
-                  <ul>
-                    {analysis.communication_gaps.map(
-                      (item, index) => (
-                        <li key={index}>
-                          {item}
-                        </li>
-                      )
-                    )}
-                  </ul>
-                ) : (
-                  <p>
-                    No communication gaps recorded.
-                  </p>
-                )}
-              </div>
-
-              <div className="analysis-card">
-                <h2>Improvement Plan</h2>
-
-                {analysis.improvement_plan?.length >
-                0 ? (
-                  <ul>
-                    {analysis.improvement_plan.map(
-                      (item, index) => (
-                        <li key={index}>
-                          {item}
-                        </li>
-                      )
-                    )}
-                  </ul>
-                ) : (
-                  <p>
-                    No improvement plan available.
-                  </p>
-                )}
-              </div>
+              {analysis.integrity && (analysis.integrity.flag_count > 0 || analysis.integrity.flagged_for_review) && (
+                <div className="analysis-card integrity-card">
+                  <h2>Integrity Report</h2>
+                  {analysis.integrity.flagged_for_review ? (
+                    <p className="flag-text">⚠️ This session was flagged for review ({analysis.integrity.flag_count} violation{analysis.integrity.flag_count !== 1 ? "s" : ""} detected).</p>
+                  ) : (
+                    <p>{analysis.integrity.flag_count} minor event(s) logged.</p>
+                  )}
+                  {analysis.integrity.flags?.map((f, i) => (
+                    <div key={i} className="flag-row">
+                      <span className="flag-type">{f.type.replace(/_/g, " ")}</span>
+                      <span className="flag-detail">{f.details}</span>
+                      <span className="flag-time">{new Date(f.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="analysis-card summary-card">
                 <h2>AI Summary</h2>
-
-                <p>
-                  {analysis.summary}
-                </p>
-
+                <p>{analysis.summary}</p>
                 <div className="recommendation">
-                  <strong>
-                    Recommendation
-                  </strong>
-
-                  <span>
-                    {analysis.recommendation}
-                  </span>
+                  <strong>Recommendation</strong>
+                  <span>{analysis.recommendation}</span>
                 </div>
               </div>
             </div>
           )}
 
           <div className="results-actions">
-            <button
-              className="primary-button"
-              onClick={() =>
-                setScreen("home")
-              }
-            >
-              Back to Dashboard
-
-              <ArrowRight size={18} />
+            <button className="primary-button" onClick={() => setScreen("home")}>
+              Back to Dashboard <ArrowRight size={18} />
             </button>
           </div>
         </main>
@@ -929,512 +1196,328 @@ function App() {
     );
   }
 
-  // --------------------------------------------------
+  // ══════════════════════════════════════════════════════════════════
   // INTERVIEW SCREEN
-  // --------------------------------------------------
+  // ══════════════════════════════════════════════════════════════════
 
   if (screen === "interview") {
     if (!question) {
       return (
-        <div className="app">
-          <main className="interview-page">
-            <h1>
-              Loading interview...
-            </h1>
-
-            <p>
-              Please wait while your
-              questions are loaded.
-            </p>
-          </main>
-        </div>
+        <div className="app"><main className="interview-page">
+          <h1>Loading interview...</h1>
+          <p>Please wait while your questions are loaded.</p>
+        </main></div>
       );
     }
+
+    const isCoding = question.category === "coding";
+    const currentCode = codeMap[question.id] ?? question.starter_code ?? "";
 
     return (
       <div className="app interview-app">
         <header className="navbar interview-navbar">
-          <div className="brand">
-            <div className="brand-icon">
-              <Sparkles size={20} />
-            </div>
-
-            <span>FirstRound</span>
-          </div>
-
-          <div className="question-counter">
-            Question{" "}
-            {currentQuestion + 1} of{" "}
-            {questions.length}
-          </div>
-
-          <div className="timer">
-            <Clock3 size={17} />
-
-            {formatTime(timeLeft)}
-          </div>
+          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
+          <div className="question-counter">Question {currentQuestion + 1} of {questions.length}</div>
+          <div className="timer"><Clock3 size={17} />{formatTime(timeLeft)}</div>
         </header>
 
         <div className="progress-bar">
-          <div
-            className="progress-fill"
-            style={{
-              width: `${
-                ((currentQuestion + 1) /
-                  questions.length) *
-                100
-              }%`,
-            }}
-          />
+          <div className="progress-fill" style={{ width: `${((currentQuestion + 1) / questions.length) * 100}%` }} />
         </div>
 
-        <main className="interview-page">
+        {proctoringWarning && (
+          <div className="proctoring-warning">
+            <AlertTriangle size={16} />
+            {proctoringWarning}
+          </div>
+        )}
+
+        <main className={`interview-page ${isCoding ? "coding-layout" : ""}`}>
+          {/* Video self-view (corner panel when proctoring enabled) */}
+          {cameraGranted && (
+            <div className="video-corner">
+              <video ref={videoRef} autoPlay muted playsInline className="video-preview" />
+              <canvas ref={canvasRef} width={160} height={120} style={{ display: "none" }} />
+            </div>
+          )}
+
           <div className="question-meta">
-            <span>
-              {question.category}
-            </span>
-
-            <span className="dot">
-              •
-            </span>
-
-            <span>
-              {question.competency}
-            </span>
+            <span>{question.category}</span>
+            <span className="dot">•</span>
+            <span>{question.competency}</span>
+            {isCoding && question.difficulty && (
+              <><span className="dot">•</span><span className={`difficulty-badge ${question.difficulty}`}>{question.difficulty}</span></>
+            )}
           </div>
 
           <div className="live-interviewer-status">
-            <div
-              className={`voice-indicator ${
-                isSpeaking
-                  ? "speaking"
-                  : ""
-              }`}
-            >
+            <div className={`voice-indicator ${isSpeaking ? "speaking" : ""}`}>
               <Sparkles size={20} />
             </div>
-
-            <span>
-              {isSpeaking
-                ? "AI interviewer is speaking..."
-                : isRecording
-                ? "Listening to your answer..."
-                : "AI interviewer"}
-            </span>
+            <span>{isSpeaking ? "AI interviewer is speaking..." : isRecording ? "Listening to your answer..." : "AI interviewer"}</span>
           </div>
 
-          <h1>
-            {question.question}
-          </h1>
+          <h1>{question.question}</h1>
 
-          <p className="question-helper">
-            {isSpeaking
-              ? "Listen to the interviewer. You can start answering when the question finishes."
-              : "Speak naturally. Your answer will be transcribed automatically."}
-          </p>
-
-          <div className="answer-card">
-            <div className="answer-header">
-              <div>
-                <span className="answer-label">
-                  YOUR ANSWER
-                </span>
-
-                <p>
-                  {isRecording
-                    ? "Listening through your microphone"
-                    : "Your spoken answer will appear here"}
-                </p>
+          {isCoding ? (
+            /* ── CODING QUESTION LAYOUT ─────────────────────── */
+            <div className="coding-panel">
+              <div className="code-editor-section">
+                <div className="editor-toolbar">
+                  <span className="editor-lang">{question.language ?? "python"}</span>
+                  <button className="run-btn" onClick={handleRunCode} disabled={isRunning}>
+                    <Play size={14} /> {isRunning ? "Running..." : "Run Code"}
+                  </button>
+                  <button className="submit-code-btn" onClick={handleSubmitCode}>
+                    <CheckCircle2 size={14} /> Submit Code
+                  </button>
+                </div>
+                <Editor
+                  height="320px"
+                  language={question.language ?? "python"}
+                  value={currentCode}
+                  theme="vs-dark"
+                  onChange={(val) => {
+                    setCodeMap((prev) => ({ ...prev, [question.id]: val ?? "" }));
+                  }}
+                  options={{ minimap: { enabled: false }, fontSize: 14, scrollBeyondLastLine: false }}
+                />
+                {runOutput && (
+                  <div className="run-output">
+                    {runOutput.stdout && <div className="stdout"><strong>Output:</strong><pre>{runOutput.stdout}</pre></div>}
+                    {runOutput.stderr && <div className="stderr"><strong>Error:</strong><pre>{runOutput.stderr}</pre></div>}
+                  </div>
+                )}
               </div>
 
-              {!isRecording ? (
-                <button
-                  className="record-button"
-                  onClick={startRecording}
-                  disabled={isSpeaking}
-                >
-                  <Mic size={18} />
-
-                  {isSpeaking
-                    ? "Wait..."
-                    : "Start Answer"}
-                </button>
-              ) : (
-                <button
-                  className="record-button recording"
-                  onClick={stopRecording}
-                >
-                  <Mic size={18} />
-
-                  Stop Answer
-                </button>
-              )}
+              <div className="voice-section">
+                <p className="question-helper">Talk through your approach while you code.</p>
+                <div className="answer-card compact">
+                  <div className="answer-header">
+                    <span className="answer-label">VERBAL EXPLANATION</span>
+                    {!isRecording
+                      ? <button className="record-button" onClick={startRecording} disabled={isSpeaking}><Mic size={18} /> Start Talking</button>
+                      : <button className="record-button recording" onClick={stopRecording}><Mic size={18} /> Stop</button>
+                    }
+                  </div>
+                  <textarea
+                    value={answer}
+                    onChange={(e) => { setAnswer(e.target.value); answerRef.current = e.target.value; finalTranscriptRef.current = e.target.value; }}
+                    placeholder="Your verbal explanation will appear here..."
+                  />
+                </div>
+              </div>
             </div>
-
-            <textarea
-              value={answer}
-              onChange={(e) => {
-                const value =
-                  e.target.value;
-
-                setAnswer(value);
-                answerRef.current = value;
-                finalTranscriptRef.current =
-                  value;
-              }}
-              placeholder={
-                isRecording
-                  ? "Speak your answer..."
-                  : "Your spoken answer will appear here..."
-              }
-            />
-
-            <div className="answer-footer">
-              <span>
-                {answer.length} characters
-              </span>
-
-              {isRecording && (
-                <span className="recording-status">
-                  <span className="recording-dot" />
-
-                  Listening...
-                </span>
-              )}
-
-              {isSpeaking && (
-                <span className="recording-status">
-                  <span className="recording-dot" />
-
-                  AI speaking...
-                </span>
-              )}
-            </div>
-          </div>
+          ) : (
+            /* ── VOICE QUESTION LAYOUT ──────────────────────── */
+            <>
+              <p className="question-helper">
+                {isSpeaking ? "Listen to the interviewer. You can start answering when finished." : "Speak naturally. Your answer will be transcribed automatically."}
+              </p>
+              <div className="answer-card">
+                <div className="answer-header">
+                  <div>
+                    <span className="answer-label">YOUR ANSWER</span>
+                    <p>{isRecording ? "Listening through your microphone" : "Your spoken answer will appear here"}</p>
+                  </div>
+                  {!isRecording
+                    ? <button className="record-button" onClick={startRecording} disabled={isSpeaking}><Mic size={18} />{isSpeaking ? "Wait..." : "Start Answer"}</button>
+                    : <button className="record-button recording" onClick={stopRecording}><Mic size={18} />Stop Answer</button>
+                  }
+                </div>
+                <textarea
+                  value={answer}
+                  onChange={(e) => { const v = e.target.value; setAnswer(v); answerRef.current = v; finalTranscriptRef.current = v; }}
+                  placeholder={isRecording ? "Speak your answer..." : "Your spoken answer will appear here..."}
+                />
+                <div className="answer-footer">
+                  <span>{answer.length} characters</span>
+                  {isRecording && <span className="recording-status"><span className="recording-dot" />Listening...</span>}
+                  {isSpeaking && <span className="recording-status"><span className="recording-dot" />AI speaking...</span>}
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="interview-actions">
-            <button
-              className="secondary-button"
-              onClick={() => {
-                stopRecording();
-                window.speechSynthesis.cancel();
-                setScreen("home");
-              }}
-            >
+            <button className="secondary-button" onClick={() => { stopRecording(); window.speechSynthesis.cancel(); stopProctoring(); setScreen("home"); }}>
               Exit Interview
             </button>
-
-            {/* IMPORTANT:
-                Finish is NOT disabled while recording.
-                Clicking it stops recording and submits
-                the latest answer.
-            */}
-            <button
-              className="primary-button"
-              onClick={nextQuestion}
-              disabled={isSpeaking}
-            >
-              {currentQuestion ===
-              questions.length - 1
-                ? "Finish Interview"
-                : "Next Question"}
-
+            <button className="primary-button" onClick={nextQuestion} disabled={isSpeaking}>
+              {currentQuestion === questions.length - 1 ? "Finish Interview" : "Next Question"}
               <ChevronRight size={18} />
             </button>
           </div>
 
           <div className="question-dots">
-            {questions.map(
-              (_, index) => (
-                <div
-                  key={index}
-                  className={`question-dot ${
-                    index ===
-                    currentQuestion
-                      ? "active"
-                      : ""
-                  } ${
-                    answers[index]
-                      ? "answered"
-                      : ""
-                  }`}
-                />
-              )
-            )}
+            {questions.map((_, i) => (
+              <div key={i} className={`question-dot ${i === currentQuestion ? "active" : ""} ${answers[i] ? "answered" : ""}`} />
+            ))}
           </div>
         </main>
       </div>
     );
   }
 
-  // --------------------------------------------------
+  // ══════════════════════════════════════════════════════════════════
   // HOME SCREEN
-  // --------------------------------------------------
+  // ══════════════════════════════════════════════════════════════════
+
+  const candidateName = (resumeSummary as { name?: string }).name;
 
   return (
     <div className="app">
       <header className="navbar">
-        <div className="brand">
-          <div className="brand-icon">
-            <Sparkles size={20} />
-          </div>
-
-          <span>FirstRound</span>
-        </div>
-
+        <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
         <div className="nav-links">
-          <span>
-            How it works
-          </span>
-
-          <span>
-            My Interviews
-          </span>
+          <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}><LinkedinIcon size={15} /> LinkedIn</span>
+          <span onClick={() => setScreen("cv-rater")} style={{ cursor: "pointer" }}><FileText size={15} /> CV Rater</span>
         </div>
-
         <div className="profile">
-          <div className="profile-avatar">
-            <UserRound size={17} />
-          </div>
-
-          <span>
-            Candidate
-          </span>
+          <div className="profile-avatar"><UserRound size={17} /></div>
+          <span>{candidateName || "Candidate"}</span>
         </div>
       </header>
 
       <main className="home-page">
         <section className="hero-section">
           <div className="hero-copy">
-            <div className="eyebrow">
-              <Sparkles size={15} />
-
-              AI-POWERED INTERVIEW COACH
-            </div>
-
-            <h1>
-              Your next interview
-              <span>
-                {" "}
-                starts here.
-              </span>
-            </h1>
-
-            <p>
-              Practice realistic
-              interviews tailored to
-              your resume and the job
-              you're applying for. Get
-              evaluated on technical
-              skills, communication and
-              role alignment.
-            </p>
-
-            <div className="hero-actions">
-              <button
-                className="primary-button"
-                onClick={
-                  startInterview
-                }
-              >
-                <Play size={18} />
-
-                Start Interview
-              </button>
-
-              <button className="secondary-button">
-                View Preparation
-              </button>
-            </div>
+            <div className="eyebrow"><Sparkles size={15} />AI-POWERED INTERVIEW COACH</div>
+            <h1>Your next interview<span> starts here.</span></h1>
+            <p>Practice realistic interviews tailored to your resume and the job you're applying for. Get evaluated on technical skills, communication and role alignment.</p>
 
             <div className="trust-row">
-              <div>
-                <CheckCircle2
-                  size={17}
-                />
-
-                Resume-based questions
-              </div>
-
-              <div>
-                <CheckCircle2
-                  size={17}
-                />
-
-                AI evaluation
-              </div>
-
-              <div>
-                <CheckCircle2
-                  size={17}
-                />
-
-                Personalized feedback
-              </div>
+              <div><CheckCircle2 size={17} />Resume-based questions</div>
+              <div><CheckCircle2 size={17} />AI evaluation</div>
+              <div><CheckCircle2 size={17} />Personalized feedback</div>
             </div>
           </div>
 
           <div className="hero-card">
             <div className="card-top">
-              <div>
-                <span className="mini-label">
-                  UPCOMING INTERVIEW
-                </span>
-
-                <h3>
-                  Cybersecurity Interview
-                </h3>
-              </div>
-
-              <div className="status-pill">
-                <span />
-
-                Ready
-              </div>
+              <h3>Prepare Your Interview</h3>
+              {prepDone && <div className="status-pill"><span />Ready</div>}
             </div>
 
-            <div className="candidate-card">
-              <div className="candidate-icon">
-                <UserRound size={24} />
+            {!prepDone ? (
+              /* ── PREP FORM ─────────────────────────────────── */
+              <div className="prep-form">
+                <label className="field-label">Target Role</label>
+                <select
+                  className="role-select"
+                  value={selectedRole}
+                  onChange={(e) => setSelectedRole(e.target.value)}
+                >
+                  {ROLE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
+                </select>
+
+                {selectedRole === "Other (type your own)" && (
+                  <input
+                    className="text-input"
+                    placeholder="e.g. Cybersecurity Analyst"
+                    value={customRole}
+                    onChange={(e) => setCustomRole(e.target.value)}
+                  />
+                )}
+
+                <label className="field-label" style={{ marginTop: 12 }}>Upload Resume (PDF)</label>
+                <input
+                  type="file"
+                  accept=".pdf"
+                  className="file-input"
+                  onChange={(e) => setResumeFile(e.target.files?.[0] ?? null)}
+                />
+                {resumeFile && <span className="file-name">✓ {resumeFile.name}</span>}
+
+                <label className="field-label" style={{ marginTop: 12 }}>Paste Job Description</label>
+                <textarea
+                  className="jd-textarea"
+                  placeholder="Paste the full job description here..."
+                  value={jdText}
+                  onChange={(e) => setJdText(e.target.value)}
+                  rows={5}
+                />
+
+                <label className="field-label" style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={proctoringEnabled}
+                    onChange={(e) => setProctoringEnabled(e.target.checked)}
+                  />
+                  Enable Video Proctoring (optional)
+                  {proctoringEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+                </label>
+
+                {prepError && <div className="error-box">{prepError}</div>}
+
+                <button
+                  className="primary-button"
+                  onClick={handlePrepare}
+                  disabled={isPreparing}
+                  style={{ marginTop: 16, width: "100%" }}
+                >
+                  {isPreparing ? "Generating questions..." : "Generate Interview Plan"}
+                  {!isPreparing && <ArrowRight size={18} />}
+                </button>
               </div>
+            ) : (
+              /* ── POST-PREP: READY TO START ─────────────────── */
+              <div className="ready-panel">
+                {candidateName && (
+                  <div className="candidate-card">
+                    <div className="candidate-icon"><UserRound size={24} /></div>
+                    <div>
+                      <strong>{candidateName}</strong>
+                      <p>{effectiveRole}</p>
+                    </div>
+                  </div>
+                )}
 
-              <div>
-                <strong>
-                  Candidate Profile
-                </strong>
+                <div className="interview-info">
+                  <div><FileText size={18} /><span><strong>{questions.length || "..."}</strong> Questions</span></div>
+                  <div><Clock3 size={18} /><span><strong>30</strong> Minutes</span></div>
+                  <div><Target size={18} /><span><strong>{effectiveRole}</strong></span></div>
+                </div>
 
-                <p>
-                  BS Cybersecurity • FAST
-                  University
-                </p>
+                <label className="field-label" style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={proctoringEnabled}
+                    onChange={(e) => setProctoringEnabled(e.target.checked)}
+                  />
+                  Enable Video Proctoring
+                  {proctoringEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+                </label>
+
+                <div className="card-footer">
+                  <button className="secondary-button small" onClick={() => setPrepDone(false)}>Re-generate</button>
+                  <button className="primary-button" onClick={startInterview} disabled={questions.length === 0}>
+                    Begin <ArrowRight size={16} />
+                  </button>
+                </div>
               </div>
-            </div>
-
-            <div className="interview-info">
-              <div>
-                <FileText size={18} />
-
-                <span>
-                  <strong>
-                    {questions.length}
-                  </strong>
-
-                  Questions
-                </span>
-              </div>
-
-              <div>
-                <Clock3 size={18} />
-
-                <span>
-                  <strong>
-                    30
-                  </strong>
-
-                  Minutes
-                </span>
-              </div>
-
-              <div>
-                <Target size={18} />
-
-                <span>
-                  <strong>
-                    3
-                  </strong>
-
-                  Competencies
-                </span>
-              </div>
-            </div>
-
-            <div className="card-footer">
-              <span>
-                Ready when you are.
-              </span>
-
-              <button
-                onClick={
-                  startInterview
-                }
-              >
-                Begin
-
-                <ArrowRight size={16} />
-              </button>
-            </div>
+            )}
           </div>
         </section>
 
         <section className="feature-section">
           <div className="section-heading">
-            <p className="eyebrow">
-              HOW FIRSTROUND WORKS
-            </p>
-
-            <h2>
-              Prepare with purpose.
-            </h2>
+            <p className="eyebrow">HOW FIRSTROUND WORKS</p>
+            <h2>Prepare with purpose.</h2>
           </div>
-
           <div className="feature-grid">
-            <div className="feature-card">
-              <div className="feature-number">
-                01
+            {[
+              { num: "01", icon: <FileText size={25} />, title: "Understand your profile", desc: "Your resume and job description are used to understand the skills the interview should focus on." },
+              { num: "02", icon: <Mic size={25} />, title: "Practice the interview", desc: "Answer realistic questions designed around your actual experience and target role." },
+              { num: "03", icon: <Target size={25} />, title: "Get evaluated", desc: "Receive structured feedback covering technical performance, communication and job alignment." },
+            ].map(({ num, icon, title, desc }) => (
+              <div key={num} className="feature-card">
+                <div className="feature-number">{num}</div>
+                {icon}
+                <h3>{title}</h3>
+                <p>{desc}</p>
               </div>
-
-              <FileText size={25} />
-
-              <h3>
-                Understand your profile
-              </h3>
-
-              <p>
-                Your resume and job
-                description are used to
-                understand the skills the
-                interview should focus on.
-              </p>
-            </div>
-
-            <div className="feature-card">
-              <div className="feature-number">
-                02
-              </div>
-
-              <Mic size={25} />
-
-              <h3>
-                Practice the interview
-              </h3>
-
-              <p>
-                Answer realistic
-                questions designed around
-                your actual experience and
-                target role.
-              </p>
-            </div>
-
-            <div className="feature-card">
-              <div className="feature-number">
-                03
-              </div>
-
-              <Target size={25} />
-
-              <h3>
-                Get evaluated
-              </h3>
-
-              <p>
-                Receive structured
-                feedback covering
-                technical performance,
-                communication and job
-                alignment.
-              </p>
-            </div>
+            ))}
           </div>
         </section>
       </main>
@@ -1443,4 +1526,3 @@ function App() {
 }
 
 export default App;
-

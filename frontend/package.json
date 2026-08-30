@@ -12,6 +12,8 @@
   "dependencies": {
     "@livekit/components-react": "^2.9.24",
     "@livekit/components-styles": "^1.2.0",
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "@monaco-editor/react": "^4.7.0",
     "livekit-client": "^2.21.0",
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",

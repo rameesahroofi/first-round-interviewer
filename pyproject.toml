@@ -11,6 +11,12 @@ dependencies = [
     "langgraph",
     "langchain",
     "langchain-google-genai",
+    "fastapi[standard]",
+    "python-multipart",
+    "pypdf",
+    "google-genai",
+    "streamlit",
+    "uvicorn[standard]",
 ]
 
 [tool.livekit]
