@@ -338,6 +338,7 @@ function App() {
   const proctoringIntervalRef = useRef<number | null>(null);
   const faceDetectorRef = useRef<unknown>(null);
   const tabHiddenAtRef = useRef<number | null>(null);
+  const proctoringStatsRef = useRef({ total: 0, eyeContact: 0 });
 
   // ── Analysis state
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -537,9 +538,13 @@ function App() {
         if (!ctx) return;
         ctx.drawImage(videoRef.current, 0, 0, 160, 120);
 
-        try {
-          const detections = (faceDetectorRef.current as { detect: (el: HTMLVideoElement) => { detections: unknown[] } }).detect(videoRef.current);
+          try {
+          const detections = (faceDetectorRef.current as any).detect(videoRef.current);
           const faceCount = detections.detections.length;
+          
+          if (screen === "interview") {
+            proctoringStatsRef.current.total++;
+          }
 
           if (faceCount === 0) {
             if (!noFaceSince) noFaceSince = Date.now();
@@ -551,6 +556,21 @@ function App() {
             noFaceSince = null;
             if (faceCount > 1) {
               addFlag("multiple_faces", `${faceCount} faces detected`, 0);
+            } else if (screen === "interview") {
+              const keypoints = detections.detections[0].keypoints;
+              if (keypoints && keypoints.length >= 3) {
+                const rightEye = keypoints[0];
+                const leftEye = keypoints[1];
+                const nose = keypoints[2];
+                const noseToLeft = Math.abs(leftEye.x - nose.x);
+                const noseToRight = Math.abs(nose.x - rightEye.x);
+                if (noseToLeft > 0 && noseToRight > 0) {
+                  const ratio = Math.max(noseToLeft, noseToRight) / Math.min(noseToLeft, noseToRight);
+                  if (ratio < 2.5) {
+                    proctoringStatsRef.current.eyeContact++;
+                  }
+                }
+              }
             }
           }
         } catch {
@@ -849,6 +869,10 @@ function App() {
       code_submissions: codeSubmissions,
       integrity_flags: integrityFlags,
       flagged_for_review: flaggedForReview,
+      duration_seconds: Math.max(0, 30 * 60 - timeLeft),
+      body_language_score: proctoringStatsRef.current.total > 0
+        ? (proctoringStatsRef.current.eyeContact / proctoringStatsRef.current.total) * 100
+        : null,
     };
 
     try {
@@ -884,6 +908,10 @@ function App() {
           code_submissions: codeSubmissions,
           integrity_flags: integrityFlags,
           flagged_for_review: true,
+          duration_seconds: Math.max(0, 30 * 60 - timeLeft),
+          body_language_score: proctoringStatsRef.current.total > 0
+            ? (proctoringStatsRef.current.eyeContact / proctoringStatsRef.current.total) * 100
+            : null,
         }),
       });
       if (resp.ok) {

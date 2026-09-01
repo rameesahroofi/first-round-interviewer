@@ -48,7 +48,14 @@ Return ONLY valid JSON using this structure:
     "strengths": [],
     "weaknesses": [],
     "feedback": "",
-    "recommendation": ""
+    "recommendation": "",
+    "star_analysis": {{
+        "situation": false,
+        "task": false,
+        "action": false,
+        "result": false,
+        "missing_parts": []
+    }}
 }}
 
 Rules:
@@ -65,6 +72,8 @@ Rules:
   "Good"
   "Needs Improvement"
   "Poor"
+- star_analysis = Check whether the answer follows the STAR method (Situation, Task, Action, Result). 
+  Set the booleans to true if present, false otherwise. Add missing parts to `missing_parts`.
 - Do not invent information that is not present in the candidate's answer.
 - Evaluate the answer according to the competency.
 - Return JSON only.

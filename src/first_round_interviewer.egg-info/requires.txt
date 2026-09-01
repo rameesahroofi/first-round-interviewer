@@ -1,0 +1,13 @@
+livekit-agents<2,>=1.6
+livekit-api
+livekit-plugins-google
+python-dotenv
+langgraph
+langchain
+langchain-google-genai
+fastapi[standard]
+python-multipart
+pypdf
+google-genai
+streamlit
+uvicorn[standard]

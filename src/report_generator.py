@@ -77,13 +77,40 @@ def generate_report(data: dict) -> str:
 - **Proctoring Review Status**: Pass (No violations detected) ✅
 """
 
+    speech_analysis = data.get("speech_analysis", {})
+    speech_section = ""
+    if speech_analysis and speech_analysis.get("wpm", 0) > 0:
+        speech_section = f"""
+---
+
+## Speech & Delivery Analysis
+
+- **Speaking Pace (WPM)**: {speech_analysis.get("wpm", 0)}
+- **Filler Words Used**: {speech_analysis.get("total_filler_words", 0)}
+
+{speech_analysis.get("feedback", "")}
+"""
+
+    body_analysis = data.get("body_language_analysis", {})
+    body_section = ""
+    if body_analysis and body_analysis.get("eye_contact_score") is not None:
+        body_section = f"""
+---
+
+## Body Language & Engagement
+
+- **Eye Contact Score**: {body_analysis.get("eye_contact_score", 0)}%
+
+{body_analysis.get("feedback", "")}
+"""
+
     report = f"""# FirstRound Interview Report
 
 ## Overall Assessment
 
 | Metric | Score |
 |---|---:|
-| Overall Score | {data.get("overall_score", 0)}/105 |
+| Overall Score | {data.get("overall_score", 0)}/100 |
 | Technical Score | {data.get("technical_score", 0)}/100 |
 | Communication Score | {data.get("communication_score", 0)}/100 |
 | JD Alignment | {data.get("jd_alignment_score", 0)}/100 |
@@ -121,6 +148,8 @@ def generate_report(data: dict) -> str:
 ## Improvement Plan
 
 {format_list(data.get("improvement_plan", []))}
+{speech_section}
+{body_section}
 {code_section}
 {integrity_section}
 

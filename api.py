@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -92,6 +93,8 @@ class InterviewSubmission(BaseModel):
     code_submissions: list[CodeSubmission] = []
     integrity_flags: list[IntegrityFlag] = []
     flagged_for_review: bool = False
+    duration_seconds: int = 0
+    body_language_score: Optional[float] = None
 
 
 class LinkedInRequest(BaseModel):
@@ -117,6 +120,8 @@ class FinishInterviewRequest(BaseModel):
     code_submissions: list[CodeSubmission] = []
     integrity_flags: list[IntegrityFlag] = []
     flagged_for_review: bool = False
+    duration_seconds: int = 0
+    body_language_score: Optional[float] = None
 
 
 # --------------------------------------------------
@@ -175,6 +180,51 @@ async def prepare_interview(
         raise HTTPException(status_code=422, detail=f"Pipeline error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preparation failed: {e}")
+
+
+def compute_metrics(answers_list, duration_seconds: int, body_language_score: Optional[float]):
+    filler_words_list = ["um", "uh", "like", "you know"]
+    filler_counts = {w: 0 for w in filler_words_list}
+    total_words = 0
+    
+    for ans in answers_list:
+        text = ans.get("candidate_answer", "").lower() if isinstance(ans, dict) else ans.candidate_answer.lower()
+        if not text: continue
+        
+        words = re.findall(r'\b\w+\b', text)
+        total_words += len(words)
+        
+        for word in filler_words_list:
+            if " " in word:
+                filler_counts[word] += text.count(word)
+            else:
+                filler_counts[word] += words.count(word)
+                
+    wpm = 0
+    if duration_seconds and duration_seconds > 0:
+        wpm = total_words / (duration_seconds / 60.0)
+        
+    speech_metrics = {
+        "filler_words": filler_counts,
+        "wpm": round(wpm, 2),
+        "total_words": total_words,
+        "total_filler_words": sum(filler_counts.values())
+    }
+    
+    body_language_metrics = None
+    if body_language_score is not None:
+        posture = "Good"
+        if body_language_score < 50:
+            posture = "Poor"
+        elif body_language_score < 75:
+            posture = "Needs Improvement"
+        
+        body_language_metrics = {
+            "eye_contact_score": round(body_language_score, 1),
+            "posture_feedback": posture
+        }
+        
+    return speech_metrics, body_language_metrics
 
 
 # --------------------------------------------------
@@ -261,6 +311,9 @@ def submit_answers(submission: InterviewSubmission):
         integrity_flags = [f.model_dump() for f in submission.integrity_flags]
 
         # 6. Generate final analysis
+        speech_metrics, body_language_metrics = compute_metrics(
+            submission.answers, submission.duration_seconds, submission.body_language_score
+        )
         analyzer = FinalAnalyzer()
         final_analysis = analyzer.analyze(
             jd=jd,
@@ -270,6 +323,8 @@ def submit_answers(submission: InterviewSubmission):
             code_submissions=code_subs if code_subs else None,
             integrity_flags=integrity_flags if integrity_flags else None,
             flagged_for_review=submission.flagged_for_review,
+            speech_metrics=speech_metrics,
+            body_language_metrics=body_language_metrics,
         )
 
         # 7. Save final analysis
@@ -428,6 +483,9 @@ def finish_interview(request: FinishInterviewRequest):
         integrity_flags = [f.model_dump() for f in request.integrity_flags]
 
         # 6. Generate final analysis
+        speech_metrics, body_language_metrics = compute_metrics(
+            extracted_answers, request.duration_seconds, request.body_language_score
+        )
         analyzer = FinalAnalyzer()
         final_analysis = analyzer.analyze(
             jd=jd,
@@ -437,6 +495,8 @@ def finish_interview(request: FinishInterviewRequest):
             code_submissions=code_subs if code_subs else None,
             integrity_flags=integrity_flags if integrity_flags else None,
             flagged_for_review=request.flagged_for_review,
+            speech_metrics=speech_metrics,
+            body_language_metrics=body_language_metrics,
         )
 
         # 7. Save final analysis
