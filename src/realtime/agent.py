@@ -1,4 +1,4 @@
-﻿import json
+import json
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -37,6 +37,7 @@ def load_candidate_context() -> dict:
     resume = load_json_safe(OUTPUT_DIR / "resume.json", {})
     gap = load_json_safe(OUTPUT_DIR / "gap_analysis.json", {})
     plan = load_json_safe(OUTPUT_DIR / "question_plan.json", {})
+    prefs = load_json_safe(OUTPUT_DIR / "preferences.json", {})
 
     name = resume.get("candidate_name", "the candidate")
     skills = resume.get("skills", [])[:8]
@@ -62,6 +63,8 @@ def load_candidate_context() -> dict:
         "projects_summary": proj_summary,
         "skill_gaps": skill_gaps,
         "strengths": strengths,
+        "persona": prefs.get("persona", "Friendly HR"),
+        "language": prefs.get("language", "English"),
     }
 
 
@@ -74,6 +77,8 @@ class Interviewer(Agent):
         projects = ctx["projects_summary"]
         gaps = ctx["skill_gaps"]
         strengths = ctx["strengths"]
+        persona = ctx.get("persona", "Friendly HR")
+        language = ctx.get("language", "English")
 
         gaps_str = ", ".join(str(g) for g in gaps) if gaps else "none identified"
         strengths_str = ", ".join(str(s) for s in strengths) if strengths else "none identified"
@@ -86,9 +91,23 @@ class Interviewer(Agent):
             for q in questions
         )
 
+        persona_instructions = {
+            "Friendly HR": "You are warm, encouraging, and supportive. Focus on making the candidate comfortable.",
+            "Strict HR": "You are highly professional, stoic, and direct. Keep pleasantries to a minimum and maintain a formal tone.",
+            "Technical Interviewer": "You are a senior engineer. Focus deeply on the technical details and push the candidate to explain the 'how' and 'why'.",
+            "Behavioral/Culture Fit": "You are focused on the candidate's core values, teamwork, and how they handle conflicts. Probe heavily into their soft skills."
+        }.get(persona, "Professional, encouraging, and genuinely curious.")
+
+        language_instruction = f"IMPORTANT: You MUST conduct the entire interview in {language}. If the language is an Urdu-English mix, seamlessly blend both languages as is common in Pakistan (using Urdu grammar with English technical terms). However, the approved questions are provided in English; you must TRANSLATE them naturally on the fly into {language} when asking them."
+
         super().__init__(
             instructions=f"""You are an expert human interviewer conducting a first-round interview
 for the role of {role}. You are speaking with {name}.
+
+Your Persona: {persona}
+{persona_instructions}
+
+{language_instruction}
 
 CANDIDATE CONTEXT (use this to personalize every interaction):
 - Name: {name}
@@ -138,8 +157,7 @@ BEHAVIORAL RULES (follow these strictly — they define your interviewing style)
 9. STAGE 4 — CLOSING: Thank {name} by name. Reference one thing they said that stood out.
    Clearly indicate the interview is complete. Keep it warm and professional.
 
-10. TONE: Professional, encouraging, and genuinely curious. Never robotic. Never canned.
-    Sound like a thoughtful senior professional, not a script reader.
+10. TONE: {persona_instructions}
 
 11. DEAD AIR IS FORBIDDEN: Every response must either acknowledge the previous answer,
     ask a follow-up, or transition to the next question. Never respond with only the

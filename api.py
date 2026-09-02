@@ -133,6 +133,8 @@ async def prepare_interview(
     role: str = Form(...),
     jd_text: str = Form(...),
     resume_file: UploadFile = File(...),
+    persona: str = Form(default="Friendly HR"),
+    language: str = Form(default="English"),
 ):
     """
     Run the full preparation pipeline:
@@ -149,6 +151,10 @@ async def prepare_interview(
         raise HTTPException(status_code=400, detail="Role cannot be empty.")
 
     try:
+        # Save preferences for the agent
+        prefs_path = Path("output/prep/preferences.json")
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(json.dumps({"persona": persona, "language": language}), encoding="utf-8")
         resume_bytes = await resume_file.read()
 
         final_state = run_pipeline(

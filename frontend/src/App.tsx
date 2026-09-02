@@ -306,6 +306,8 @@ function App() {
   const [customRole, setCustomRole] = useState("");
   const [jdText, setJdText] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [interviewerPersona, setInterviewerPersona] = useState("Friendly HR");
+  const [interviewLanguage, setInterviewLanguage] = useState("English");
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepError, setPrepError] = useState("");
   const [prepDone, setPrepDone] = useState(false);
@@ -669,6 +671,8 @@ function App() {
       form.append("role", effectiveRole);
       form.append("jd_text", jdText);
       form.append("resume_file", resumeFile);
+      form.append("persona", interviewerPersona);
+      form.append("language", interviewLanguage);
 
       const resp = await fetch("http://127.0.0.1:8000/api/prepare", {
         method: "POST",
@@ -1295,11 +1299,35 @@ function App() {
   // ══════════════════════════════════════════════════════════════════
 
   if (screen === "results") {
+    const downloadPDF = () => {
+      const element = document.querySelector('.results-page');
+      const opt = {
+        margin: 0.5,
+        filename: 'FirstRound_Interview_Report.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+      };
+      // @ts-ignore
+      window.html2pdf().set(opt).from(element).save();
+    };
+
     return (
       <div className="app">
         <header className="navbar">
           <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
-          <div className="nav-status"><CheckCircle2 size={18} /> Interview completed</div>
+          <div className="nav-status">
+            <CheckCircle2 size={18} /> Interview completed
+            {analysis && (
+              <button 
+                onClick={downloadPDF}
+                className="secondary-button"
+                style={{ marginLeft: 16 }}
+              >
+                Download PDF
+              </button>
+            )}
+          </div>
         </header>
 
         <main className="results-page">
@@ -1631,6 +1659,29 @@ function App() {
                     onChange={(e) => setCustomRole(e.target.value)}
                   />
                 )}
+
+                <label className="field-label">Interviewer Persona</label>
+                <select
+                  className="role-select"
+                  value={interviewerPersona}
+                  onChange={(e) => setInterviewerPersona(e.target.value)}
+                >
+                  <option>Friendly HR</option>
+                  <option>Strict HR</option>
+                  <option>Technical Interviewer</option>
+                  <option>Behavioral/Culture Fit</option>
+                </select>
+
+                <label className="field-label">Interview Language</label>
+                <select
+                  className="role-select"
+                  value={interviewLanguage}
+                  onChange={(e) => setInterviewLanguage(e.target.value)}
+                >
+                  <option>English</option>
+                  <option>Urdu</option>
+                  <option>Urdu-English Mix</option>
+                </select>
 
                 <label className="field-label" style={{ marginTop: 12 }}>Upload Resume (PDF)</label>
                 <input
