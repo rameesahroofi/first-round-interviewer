@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -13,6 +13,18 @@ from fastapi.middleware.cors import CORSMiddleware
 import livekit.api as lk_api
 from pydantic import BaseModel
 
+# Phase 1 - Phase 5 Modules
+from src.realtime.session_memory import InterviewSessionMemory
+from src.agents.adaptive_planner import AdaptivePlannerAgent
+from src.agents.explainable_evaluator import ExplainableEvaluator
+from src.agents.audio_analytics import AudioAnalyticsEngine
+from src.agents.persona_builder import PersonaBuilderAgent
+from src.agents.report_and_progress import ProgressTrackerDB, ProfessionalPDFReportGenerator
+from src.agents.post_interview_coach import PostInterviewCoachAgent
+
+print("All Phase 1 - Phase 5 Modules Loaded Successfully!")
+
+# Legacy / Pipeline Imports
 from src.agents.answer_evaluation import AnswerEvaluator
 from src.agents.answer_extractor import AnswerExtractor
 from src.agents.code_evaluator import CodeEvaluator
@@ -38,10 +50,18 @@ FINAL_REPORT_PATH = Path("output/prep/final_report.md")
 JD_PATH = Path("output/prep/jd.json")
 RESUME_PATH = Path("output/prep/resume.json")
 GAP_ANALYSIS_PATH = Path("output/prep/gap_analysis.json")
+HISTORY_DIR = Path("output/history")
 
 
 # --------------------------------------------------
-# FASTAPI
+# GLOBAL SESSION STORE
+# --------------------------------------------------
+
+active_sessions: Dict[str, InterviewSessionMemory] = {}
+
+
+# --------------------------------------------------
+# FASTAPI APP & CORS
 # --------------------------------------------------
 
 app = FastAPI(title="FirstRound API")
@@ -59,7 +79,7 @@ app.add_middleware(
 
 
 # --------------------------------------------------
-# REQUEST MODELS
+# REQUEST & RESPONSE MODELS
 # --------------------------------------------------
 
 class CodeSubmission(BaseModel):
@@ -89,9 +109,9 @@ class InterviewAnswer(BaseModel):
 
 
 class InterviewSubmission(BaseModel):
-    answers: list[InterviewAnswer]
-    code_submissions: list[CodeSubmission] = []
-    integrity_flags: list[IntegrityFlag] = []
+    answers: List[InterviewAnswer]
+    code_submissions: List[CodeSubmission] = []
+    integrity_flags: List[IntegrityFlag] = []
     flagged_for_review: bool = False
     duration_seconds: int = 0
     body_language_score: Optional[float] = None
@@ -117,75 +137,71 @@ class LiveKitTokenRequest(BaseModel):
 
 
 class FinishInterviewRequest(BaseModel):
-    code_submissions: list[CodeSubmission] = []
-    integrity_flags: list[IntegrityFlag] = []
+    code_submissions: List[CodeSubmission] = []
+    integrity_flags: List[IntegrityFlag] = []
     flagged_for_review: bool = False
     duration_seconds: int = 0
     body_language_score: Optional[float] = None
 
 
+class StartSessionRequest(BaseModel):
+    session_id: str
+    candidate_name: str
+    job_role: str
+    persona: Optional[str] = "technical_lead"
+    stress_mode: Optional[str] = "normal"
+    language: Optional[str] = "english"
+
+
+class TurnProcessRequest(BaseModel):
+    session_id: str
+    question_id: str
+    question_text: str
+    candidate_answer: str
+    audio_duration_seconds: float
+    approved_questions: List[Dict[str, Any]]
+    followup_depth: int = 0
+
+
+class PostChatRequest(BaseModel):
+    session_id: str
+    message: str
+    session_summary: Dict[str, Any]
+
+
 # --------------------------------------------------
-# PREPARE (LangGraph pipeline)
+# HELPER FUNCTIONS
 # --------------------------------------------------
 
-@app.post("/api/prepare")
-async def prepare_interview(
-    role: str = Form(...),
-    jd_text: str = Form(...),
-    resume_file: UploadFile = File(...),
-    persona: str = Form(default="Friendly HR"),
-    language: str = Form(default="English"),
+def save_interview_history(
+    final_analysis,
+    answers,
+    answer_evaluation,
+    duration_seconds=0,
+    body_language_score=None,
 ):
-    """
-    Run the full preparation pipeline:
-    resume_parser -> jd_parser -> gap_analyzer -> question_planner
-    Saves all JSON outputs to output/prep/ and returns the question plan.
-    """
-    if not resume_file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Resume must be a PDF file.")
+    """Save a completed interview as a permanent history record."""
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    interview_id = uuid.uuid4().hex
 
-    if not jd_text.strip():
-        raise HTTPException(status_code=400, detail="Job description text cannot be empty.")
+    history_record = {
+        "interview_id": interview_id,
+        "timestamp": __import__("datetime").datetime.now().isoformat(),
+        "duration_seconds": duration_seconds,
+        "body_language_score": body_language_score,
+        "answers": answers,
+        "answer_evaluation": answer_evaluation,
+        "analysis": final_analysis,
+    }
 
-    if not role.strip():
-        raise HTTPException(status_code=400, detail="Role cannot be empty.")
+    history_path = HISTORY_DIR / f"{interview_id}.json"
+    history_path.write_text(
+        json.dumps(history_record, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
-    try:
-        # Save preferences for the agent
-        prefs_path = Path("output/prep/preferences.json")
-        prefs_path.parent.mkdir(parents=True, exist_ok=True)
-        prefs_path.write_text(json.dumps({"persona": persona, "language": language}), encoding="utf-8")
-        resume_bytes = await resume_file.read()
-
-        final_state = run_pipeline(
-            role=role.strip(),
-            jd_text=jd_text.strip(),
-            resume_bytes=resume_bytes,
-        )
-
-        # Initialize approved_plan.json with generated plan so questions are immediately ready
-        APPROVED_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        APPROVED_PLAN_PATH.write_text(
-            json.dumps(final_state["question_plan"], indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-
-        return {
-            "success": True,
-            "message": "Interview preparation complete.",
-            "question_plan": final_state["question_plan"],
-            "gap_analysis": final_state["gap_analysis"],
-            "resume_summary": {
-                "name": final_state["resume_data"].get("candidate_name", ""),
-                "skills": final_state["resume_data"].get("skills", [])[:10],
-                "experience_count": len(final_state["resume_data"].get("experience", [])),
-                "projects_count": len(final_state["resume_data"].get("projects", [])),
-            },
-        }
-
-    except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=f"Pipeline error: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Preparation failed: {e}")
+    print(f"Interview history saved: {history_path}")
+    return interview_id
 
 
 def compute_metrics(answers_list, duration_seconds: int, body_language_score: Optional[float]):
@@ -195,7 +211,8 @@ def compute_metrics(answers_list, duration_seconds: int, body_language_score: Op
     
     for ans in answers_list:
         text = ans.get("candidate_answer", "").lower() if isinstance(ans, dict) else ans.candidate_answer.lower()
-        if not text: continue
+        if not text:
+            continue
         
         words = re.findall(r'\b\w+\b', text)
         total_words += len(words)
@@ -205,7 +222,7 @@ def compute_metrics(answers_list, duration_seconds: int, body_language_score: Op
                 filler_counts[word] += text.count(word)
             else:
                 filler_counts[word] += words.count(word)
-                
+            
     wpm = 0
     if duration_seconds and duration_seconds > 0:
         wpm = total_words / (duration_seconds / 60.0)
@@ -234,6 +251,162 @@ def compute_metrics(answers_list, duration_seconds: int, body_language_score: Op
 
 
 # --------------------------------------------------
+# NEW ADVANCED AI COACHING ENDPOINTS (PHASES 1 - 5)
+# --------------------------------------------------
+
+@app.post("/api/interview/start")
+async def start_interview_session(req: StartSessionRequest):
+    """Initializes real-time session memory and returns configured persona system prompt."""
+    memory = InterviewSessionMemory(
+        session_id=req.session_id,
+        candidate_name=req.candidate_name,
+        job_role=req.job_role
+    )
+    active_sessions[req.session_id] = memory
+    
+    system_prompt = PersonaBuilderAgent.build_system_prompt(
+        persona_key=req.persona,
+        stress_mode=req.stress_mode,
+        language=req.language
+    )
+    
+    return {
+        "status": "initialized",
+        "session_id": req.session_id,
+        "system_prompt": system_prompt
+    }
+
+
+@app.post("/api/interview/process-turn")
+async def process_interview_turn(req: TurnProcessRequest):
+    """
+    Processes a live candidate turn: calculates WPM/fillers, 
+    evaluates response quality, logs memory, and plans next adaptive step.
+    """
+    memory = active_sessions.get(req.session_id)
+    if not memory:
+        memory = InterviewSessionMemory(session_id=req.session_id, job_role="Software Engineer")
+        active_sessions[req.session_id] = memory
+
+    # 1. Speech analytics (WPM and Fillers)
+    speech_metrics = AudioAnalyticsEngine.analyze_transcript_segment(
+        transcript=req.candidate_answer,
+        duration_seconds=req.audio_duration_seconds
+    )
+
+    # 2. Evaluation using Explainable Evaluator
+    evaluator = AnswerEvaluator()
+    raw_eval = evaluator.evaluate(
+        question=req.question_text,
+        answer=req.candidate_answer,
+        competency="Technical & Delivery"
+    )
+    eval_result = ExplainableEvaluator.parse_and_validate_evaluation(json.dumps(raw_eval))
+
+    # 3. Log turn in memory
+    memory.record_turn(
+        question_id=req.question_id,
+        question=req.question_text,
+        answer=req.candidate_answer,
+        evaluation=eval_result
+    )
+
+    # 4. Adaptive next question logic
+    planner = AdaptivePlannerAgent(max_followup_depth=2)
+    next_step = planner.plan_next_step(
+        current_question={"id": req.question_id, "text": req.question_text, "topic": "Core Concept"},
+        candidate_answer=req.candidate_answer,
+        evaluation=eval_result,
+        memory=memory,
+        approved_question_bank=req.approved_questions,
+        current_followup_depth=req.followup_depth
+    )
+
+    return {
+        "speech_metrics": speech_metrics,
+        "evaluation": eval_result,
+        "next_step": next_step,
+        "session_context": memory.get_prompt_context()
+    }
+
+
+@app.get("/api/interview/history")
+async def get_progress_history():
+    """Returns historical session scores for progress tracking dashboard."""
+    return ProgressTrackerDB.load_history()
+
+
+@app.post("/api/interview/post-chat")
+async def post_interview_chat(req: PostChatRequest):
+    """Answers candidate follow-up questions grounded strictly in session telemetry."""
+    reply = PostInterviewCoachAgent.answer_candidate_query(req.message, req.session_summary)
+    return {"reply": reply}
+
+
+@app.get("/api/interview/next-target")
+async def get_next_interview_target():
+    """Returns focus areas and difficulty targets for the candidate's next practice session."""
+    return PostInterviewCoachAgent.plan_next_interview_focus()
+
+
+# --------------------------------------------------
+# PREPARE (LangGraph Pipeline)
+# --------------------------------------------------
+
+@app.post("/api/prepare")
+async def prepare_interview(
+    role: str = Form(...),
+    jd_text: str = Form(...),
+    resume_file: UploadFile = File(...),
+    persona: str = Form(default="Friendly HR"),
+    language: str = Form(default="English"),
+):
+    if not resume_file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Resume must be a PDF file.")
+
+    if not jd_text.strip():
+        raise HTTPException(status_code=400, detail="Job description text cannot be empty.")
+
+    if not role.strip():
+        raise HTTPException(status_code=400, detail="Role cannot be empty.")
+
+    try:
+        prefs_path = Path("output/prep/preferences.json")
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(json.dumps({"persona": persona, "language": language}), encoding="utf-8")
+        resume_bytes = await resume_file.read()
+
+        final_state = run_pipeline(
+            role=role.strip(),
+            jd_text=jd_text.strip(),
+            resume_bytes=resume_bytes,
+        )
+
+        APPROVED_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        APPROVED_PLAN_PATH.write_text(
+            json.dumps(final_state["question_plan"], indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        return {
+            "success": True,
+            "message": "Interview preparation complete.",
+            "question_plan": final_state["question_plan"],
+            "gap_analysis": final_state["gap_analysis"],
+            "resume_summary": {
+                "name": final_state["resume_data"].get("candidate_name", ""),
+                "skills": final_state["resume_data"].get("skills", [])[:10],
+                "experience_count": len(final_state["resume_data"].get("experience", [])),
+                "projects_count": len(final_state["resume_data"].get("projects", [])),
+            },
+        }
+
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=f"Pipeline error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preparation failed: {e}")
+
+
+# --------------------------------------------------
 # QUESTIONS
 # --------------------------------------------------
 
@@ -259,20 +432,16 @@ def get_questions():
 @app.post("/api/answers")
 def submit_answers(submission: InterviewSubmission):
     try:
-        # 1. Save raw answers
         answers_data = {"answers": [a.model_dump() for a in submission.answers]}
         ANSWERS_PATH.parent.mkdir(parents=True, exist_ok=True)
         ANSWERS_PATH.write_text(
             json.dumps(answers_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        print(f"Saved {len(submission.answers)} interview answers.")
 
-        # 2. Actually evaluate each answer with Gemini (no more stub zeros)
         evaluator = AnswerEvaluator()
         evaluations = []
 
         for answer_data in submission.answers:
-            # Skip evaluation for empty answers or candidate_questions category
             if not answer_data.candidate_answer.strip() or answer_data.category == "candidate_questions":
                 evaluation = {
                     "score": 0, "relevance": 0, "technical_quality": 0,
@@ -281,7 +450,6 @@ def submit_answers(submission: InterviewSubmission):
                     "recommendation": "N/A"
                 }
             else:
-                print(f"Evaluating question {answer_data.question_id}...")
                 evaluation = evaluator.evaluate(
                     question=answer_data.question,
                     answer=answer_data.candidate_answer,
@@ -297,13 +465,11 @@ def submit_answers(submission: InterviewSubmission):
                 "evaluation": evaluation,
             })
 
-        # 3. Save evaluations
         answer_evaluation = {"evaluations": evaluations}
         ANSWER_EVALUATION_PATH.write_text(
             json.dumps(answer_evaluation, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-        # 4. Load JD / Resume / Gap Analysis
         for path in [JD_PATH, RESUME_PATH, GAP_ANALYSIS_PATH]:
             if not path.exists():
                 raise FileNotFoundError(f"Required file not found: {path}")
@@ -312,11 +478,9 @@ def submit_answers(submission: InterviewSubmission):
         resume = json.loads(RESUME_PATH.read_text(encoding="utf-8"))
         gap_analysis = json.loads(GAP_ANALYSIS_PATH.read_text(encoding="utf-8"))
 
-        # 5. Prepare code submissions for final analysis
         code_subs = [cs.model_dump() for cs in submission.code_submissions]
         integrity_flags = [f.model_dump() for f in submission.integrity_flags]
 
-        # 6. Generate final analysis
         speech_metrics, body_language_metrics = compute_metrics(
             submission.answers, submission.duration_seconds, submission.body_language_score
         )
@@ -333,24 +497,63 @@ def submit_answers(submission: InterviewSubmission):
             body_language_metrics=body_language_metrics,
         )
 
-        # 7. Save final analysis
         FINAL_ANALYSIS_PATH.write_text(
             json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        print("Final interview analysis generated successfully.")
 
-        # 8. Generate and save human-readable report
+        # Save session into ProgressTrackerDB
+        ProgressTrackerDB.save_session({
+            "session_id": uuid.uuid4().hex[:8],
+            "job_role": jd.get("title", "Software Engineer"),
+            "overall_score": final_analysis.get("overall_score", 0),
+            "technical_score": final_analysis.get("technical_score", 0),
+            "communication_score": final_analysis.get("communication_score", 0),
+            "wpm": speech_metrics.get("wpm", 0),
+            "filler_count": speech_metrics.get("total_filler_words", 0),
+            "weak_areas": final_analysis.get("areas_for_improvement", [])
+        })
+
+        interview_id = save_interview_history(
+            final_analysis=final_analysis,
+            answers=answers_data,
+            answer_evaluation=answer_evaluation,
+            duration_seconds=submission.duration_seconds,
+            body_language_score=submission.body_language_score,
+        )
+
         try:
             report_md = generate_report(final_analysis)
             FINAL_REPORT_PATH.write_text(report_md, encoding="utf-8")
-            print("Final interview report markdown generated successfully.")
         except Exception as err:
             print(f"Failed to generate report markdown: {err}")
+
+        # Generate downloadable PDF
+        try:
+            ProfessionalPDFReportGenerator.generate_pdf({
+                "candidate_name": resume.get("candidate_name", "Candidate"),
+                "job_role": jd.get("title", "Software Engineer"),
+                "overall_score": final_analysis.get("overall_score", 0),
+                "technical_score": final_analysis.get("technical_score", 0),
+                "communication_score": final_analysis.get("communication_score", 0),
+                "wpm": speech_metrics.get("wpm", 0),
+                "filler_count": speech_metrics.get("total_filler_words", 0),
+                "questions": [
+                    {
+                        "question": ev.get("question"),
+                        "score": ev.get("evaluation", {}).get("score", 0),
+                        "answer": ev.get("candidate_answer"),
+                        "rationale": ev.get("evaluation", {}).get("feedback", "")
+                    } for ev in evaluations
+                ]
+            }, output_path="output/prep/interview_report.pdf")
+        except Exception as pdf_err:
+            print(f"Failed to generate PDF report: {pdf_err}")
 
         return {
             "success": True,
             "message": "Interview evaluated successfully.",
             "analysis": final_analysis,
+            "interview_id": interview_id,
         }
 
     except Exception as e:
@@ -378,12 +581,6 @@ def get_analysis():
 
 @app.post("/api/livekit-token")
 def mint_livekit_token(request: LiveKitTokenRequest):
-    """
-    Mint a LiveKit access token so the frontend can join a room.
-    The LiveKit agent worker (configured with agent_name='first-round-interviewer')
-    is automatically dispatched into rooms created via the LiveKit Cloud dashboard
-    or via `livekit-agent dev` which watches for new rooms.
-    """
     api_key = os.getenv("LIVEKIT_API_KEY")
     api_secret = os.getenv("LIVEKIT_API_SECRET")
     livekit_url = os.getenv("LIVEKIT_URL")
@@ -420,23 +617,16 @@ def mint_livekit_token(request: LiveKitTokenRequest):
 
 
 # --------------------------------------------------
-# FINISH INTERVIEW (transcript-derived answers)
+# FINISH INTERVIEW
 # --------------------------------------------------
 
 @app.post("/api/finish-interview")
 def finish_interview(request: FinishInterviewRequest):
-    """
-    End the interview by extracting answers from the LiveKit transcript
-    server-side via AnswerExtractor, then running the full evaluation pipeline.
-    """
     try:
-        # 1. Extract answers from transcript using AnswerExtractor
         extractor = AnswerExtractor()
         extracted = extractor.extract()
         extracted_answers = extracted.get("answers", [])
-        print(f"Extracted {len(extracted_answers)} answers from transcript.")
 
-        # 2. Evaluate each answer with Gemini
         evaluator = AnswerEvaluator()
         evaluations = []
 
@@ -452,7 +642,6 @@ def finish_interview(request: FinishInterviewRequest):
                     "recommendation": "N/A"
                 }
             else:
-                print(f"Evaluating question {ans.get('question_id', '?')}...")
                 evaluation = evaluator.evaluate(
                     question=ans.get("question", ""),
                     answer=candidate_answer,
@@ -468,14 +657,12 @@ def finish_interview(request: FinishInterviewRequest):
                 "evaluation": evaluation,
             })
 
-        # 3. Save answer evaluations
         answer_evaluation = {"evaluations": evaluations}
         ANSWER_EVALUATION_PATH.parent.mkdir(parents=True, exist_ok=True)
         ANSWER_EVALUATION_PATH.write_text(
             json.dumps(answer_evaluation, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-        # 4. Load JD / Resume / Gap Analysis
         for path in [JD_PATH, RESUME_PATH, GAP_ANALYSIS_PATH]:
             if not path.exists():
                 raise FileNotFoundError(f"Required file not found: {path}")
@@ -484,11 +671,9 @@ def finish_interview(request: FinishInterviewRequest):
         resume = json.loads(RESUME_PATH.read_text(encoding="utf-8"))
         gap_analysis = json.loads(GAP_ANALYSIS_PATH.read_text(encoding="utf-8"))
 
-        # 5. Prepare code submissions and integrity flags
         code_subs = [cs.model_dump() for cs in request.code_submissions]
         integrity_flags = [f.model_dump() for f in request.integrity_flags]
 
-        # 6. Generate final analysis
         speech_metrics, body_language_metrics = compute_metrics(
             extracted_answers, request.duration_seconds, request.body_language_score
         )
@@ -505,19 +690,9 @@ def finish_interview(request: FinishInterviewRequest):
             body_language_metrics=body_language_metrics,
         )
 
-        # 7. Save final analysis
         FINAL_ANALYSIS_PATH.write_text(
             json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        print("Final interview analysis generated successfully.")
-
-        # 8. Generate and save human-readable report
-        try:
-            report_md = generate_report(final_analysis)
-            FINAL_REPORT_PATH.write_text(report_md, encoding="utf-8")
-            print("Final interview report markdown generated successfully.")
-        except Exception as err:
-            print(f"Failed to generate report markdown: {err}")
 
         return {
             "success": True,
@@ -526,15 +701,13 @@ def finish_interview(request: FinishInterviewRequest):
         }
 
     except FileNotFoundError as e:
-        print(f"Finish interview failed (missing file): {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"Finish interview failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # --------------------------------------------------
-# EVALUATE CODE (in-browser execution result -> Gemini scoring)
+# EVALUATE CODE
 # --------------------------------------------------
 
 @app.post("/api/evaluate-code")

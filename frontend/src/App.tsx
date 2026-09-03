@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import { Room, Track } from "livekit-client";
+import { ProgressDashboard } from './components/ProgressDashboard';
+import { PostInterviewChat } from './components/PostInterviewChat';
 import {
   ArrowRight, CheckCircle2, ChevronRight, Clock3,
   Code2, Eye, EyeOff, FileText, Mic, Play, ShieldCheck,
   Sparkles, Target, UserRound, AlertTriangle,
-  Star, Copy, Check, Radio,
+  Star, Copy, Check, Radio, BarChart3
 } from "lucide-react";
 import "./App.css";
 
@@ -13,7 +15,7 @@ import "./App.css";
 // TYPES
 // ──────────────────────────────────────────────────────────────────
 
-type Screen = "home" | "interview" | "results" | "linkedin" | "cv-rater";
+type Screen = "home" | "interview" | "results" | "linkedin" | "cv-rater" | "progress";
 
 type Question = {
   id: number;
@@ -138,12 +140,10 @@ let _pyodideLoading = false;
 async function loadPyodide(): Promise<PyodideInterface> {
   if (_pyodideInstance) return _pyodideInstance;
   if (_pyodideLoading) {
-    // Wait for in-flight load
     while (_pyodideLoading) await new Promise((r) => setTimeout(r, 100));
     return _pyodideInstance!;
   }
   _pyodideLoading = true;
-  // Load the Pyodide script from CDN
   await new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js";
@@ -238,14 +238,12 @@ async function runCodeLocally(
   if (lang === "javascript" || lang === "typescript" || lang === "js" || lang === "ts") {
     return runJsInIframe(code);
   }
-  // Unsupported language — no in-browser execution
   return { stdout: "", stderr: "In-browser execution not supported for this language. Code will be reviewed without execution.", exitCode: -1 };
 }
 
 // ──────────────────────────────────────────────────────────────────
-// COPY BUTTON helper
+// HELPERS
 // ──────────────────────────────────────────────────────────────────
-
 
 function LinkedinIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
   return (
@@ -285,10 +283,6 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-// ──────────────────────────────────────────────────────────────────
-// SCORE BADGE helper
-// ──────────────────────────────────────────────────────────────────
-
 function ScoreBadge({ score }: { score: number }) {
   const color = score >= 75 ? "score-green" : score >= 50 ? "score-yellow" : "score-red";
   return <span className={`score-badge ${color}`}>{score}/100</span>;
@@ -301,19 +295,20 @@ function ScoreBadge({ score }: { score: number }) {
 function App() {
   const [screen, setScreen] = useState<Screen>("home");
 
-  // ── Home / prepare state
+  // Home / prepare state
   const [selectedRole, setSelectedRole] = useState("Software Engineer");
   const [customRole, setCustomRole] = useState("");
   const [jdText, setJdText] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
-  const [interviewerPersona, setInterviewerPersona] = useState("Friendly HR");
+  const [interviewerPersona, setInterviewerPersona] = useState("technical_lead");
+  const [stressMode, setStressMode] = useState("normal");
   const [interviewLanguage, setInterviewLanguage] = useState("English");
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepError, setPrepError] = useState("");
   const [prepDone, setPrepDone] = useState(false);
   const [resumeSummary, setResumeSummary] = useState<Record<string, unknown>>({});
 
-  // ── Interview state
+  // Interview state
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answer, setAnswer] = useState("");
   const [answers, setAnswers] = useState<string[]>([]);
@@ -321,13 +316,13 @@ function App() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [timeLeft, setTimeLeft] = useState(30 * 60);
 
-  // ── Code editor state
+  // Code editor state
   const [codeMap, setCodeMap] = useState<Record<number, string>>({});
   const [runOutput, setRunOutput] = useState<{ stdout: string; stderr: string } | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [codeSubmissions, setCodeSubmissions] = useState<CodeSubmission[]>([]);
 
-  // ── Proctoring state
+  // Proctoring state
   const [proctoringEnabled, setProctoringEnabled] = useState(false);
   const [cameraGranted, setCameraGranted] = useState(false);
   const [, setStrikeCount] = useState(0);
@@ -342,40 +337,36 @@ function App() {
   const tabHiddenAtRef = useRef<number | null>(null);
   const proctoringStatsRef = useRef({ total: 0, eyeContact: 0 });
 
-  // ── Analysis state
+  // Analysis state
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
 
-  // ── LinkedIn state
+  // LinkedIn state
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [linkedinText, setLinkedinText] = useState("");
   const [linkedinLoading, setLinkedinLoading] = useState(false);
   const [linkedinResult, setLinkedinResult] = useState<Record<string, unknown> | null>(null);
   const [linkedinError, setLinkedinError] = useState("");
 
-  // ── CV rater state
+  // CV rater state
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [cvJdText, setCvJdText] = useState("");
   const [cvLoading, setCvLoading] = useState(false);
   const [cvResult, setCvResult] = useState<Record<string, unknown> | null>(null);
   const [cvError, setCvError] = useState("");
 
-  // ── LiveKit state
+  // LiveKit state
   const [livekitConnected, setLivekitConnected] = useState(false);
   const livekitRoomRef = useRef<Room | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  // Speech refs (kept for live transcript display only)
+  // Speech refs
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const finalTranscriptRef = useRef("");
   const answerRef = useRef("");
 
   const effectiveRole = selectedRole === "Other (type your own)" ? customRole : selectedRole;
-
-  // ──────────────────────────────────────────────────────────────────
-  // LOAD QUESTIONS
-  // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!prepDone) return;
@@ -384,10 +375,6 @@ function App() {
       .then((data) => setQuestions(data.questions ?? []))
       .catch(console.error);
   }, [prepDone]);
-
-  // ──────────────────────────────────────────────────────────────────
-  // LOAD ANALYSIS ON RESULTS SCREEN
-  // ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (screen !== "results") return;
@@ -399,11 +386,7 @@ function App() {
       .then((data) => setAnalysis(data))
       .catch(() => setAnalysisError("Unable to load analysis. Make sure the backend is running."))
       .finally(() => setAnalysisLoading(false));
-  }, [screen]);
-
-  // ──────────────────────────────────────────────────────────────────
-  // TIMER
-  // ──────────────────────────────────────────────────────────────────
+  }, [screen, analysis]);
 
   useEffect(() => {
     if (screen !== "interview") return;
@@ -417,10 +400,6 @@ function App() {
     return () => window.clearInterval(timer);
   }, [screen, timeLeft]);
 
-  // ──────────────────────────────────────────────────────────────────
-  // QUESTION CHANGE (reset UI state — agent speaks questions via LiveKit)
-  // ──────────────────────────────────────────────────────────────────
-
   useEffect(() => {
     if (screen !== "interview") return;
     const q = questions[currentQuestion];
@@ -431,9 +410,33 @@ function App() {
     setRunOutput(null);
   }, [screen, currentQuestion, questions]);
 
-  // ──────────────────────────────────────────────────────────────────
-  // TAB-SWITCH DETECTION
-  // ──────────────────────────────────────────────────────────────────
+  const addFlag = useCallback((type: string, details: string, duration = 0) => {
+    const flag: IntegrityFlag = {
+      type,
+      timestamp: new Date().toISOString(),
+      duration,
+      details,
+    };
+
+    setIntegrityFlags((prev) => {
+      const updated = [...prev, flag];
+      const recentStrikes = updated.filter((f) => {
+        const age = (Date.now() - new Date(f.timestamp).getTime()) / 1000 / 60;
+        return age < 10;
+      }).length;
+
+      if (recentStrikes >= 3) {
+        setFlaggedForReview(true);
+        setProctoringWarning("⚠️ Interview flagged for review due to repeated violations.");
+      } else {
+        setProctoringWarning(`⚠️ Warning: ${details} (Strike ${recentStrikes}/3)`);
+        setTimeout(() => setProctoringWarning(""), 8000);
+      }
+      return updated;
+    });
+
+    setStrikeCount((p) => p + 1);
+  }, []);
 
   useEffect(() => {
     if (screen !== "interview") return;
@@ -468,43 +471,7 @@ function App() {
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [screen]);
-
-  // ──────────────────────────────────────────────────────────────────
-  // INTEGRITY FLAG SYSTEM
-  // ──────────────────────────────────────────────────────────────────
-
-  const addFlag = useCallback((type: string, details: string, duration = 0) => {
-    const flag: IntegrityFlag = {
-      type,
-      timestamp: new Date().toISOString(),
-      duration,
-      details,
-    };
-
-    setIntegrityFlags((prev) => {
-      const updated = [...prev, flag];
-      const recentStrikes = updated.filter((f) => {
-        const age = (Date.now() - new Date(f.timestamp).getTime()) / 1000 / 60;
-        return age < 10;
-      }).length;
-
-      if (recentStrikes >= 3) {
-        setFlaggedForReview(true);
-        setProctoringWarning("⚠️ Interview flagged for review due to repeated violations.");
-      } else {
-        setProctoringWarning(`⚠️ Warning: ${details} (Strike ${recentStrikes}/3)`);
-        setTimeout(() => setProctoringWarning(""), 8000);
-      }
-      return updated;
-    });
-
-    setStrikeCount((p) => p + 1);
-  }, []);
-
-  // ──────────────────────────────────────────────────────────────────
-  // WEBCAM PROCTORING (MediaPipe Tasks Vision)
-  // ──────────────────────────────────────────────────────────────────
+  }, [screen, addFlag]);
 
   const startProctoring = useCallback(async () => {
     try {
@@ -516,7 +483,6 @@ function App() {
         await videoRef.current.play();
       }
 
-      // Dynamically import MediaPipe to avoid SSR issues
       const { FaceDetector, FilesetResolver } = await import("@mediapipe/tasks-vision");
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
@@ -540,7 +506,7 @@ function App() {
         if (!ctx) return;
         ctx.drawImage(videoRef.current, 0, 0, 160, 120);
 
-          try {
+        try {
           const detections = (faceDetectorRef.current as any).detect(videoRef.current);
           const faceCount = detections.detections.length;
           
@@ -576,14 +542,14 @@ function App() {
             }
           }
         } catch {
-          // Detection error — silently continue
+          /* ignore */
         }
       }, 1500);
     } catch {
       setCameraGranted(false);
       setProctoringWarning("Camera access denied — proctoring disabled.");
     }
-  }, [addFlag]);
+  }, [addFlag, screen]);
 
   const stopProctoring = useCallback(() => {
     if (proctoringIntervalRef.current) {
@@ -601,10 +567,6 @@ function App() {
       stopProctoring();
     }
   }, [screen, stopProctoring]);
-
-  // ──────────────────────────────────────────────────────────────────
-  // SPEECH RECOGNITION
-  // ──────────────────────────────────────────────────────────────────
 
   const startRecording = () => {
     if (isRecording) return;
@@ -655,10 +617,6 @@ function App() {
     setIsRecording(false);
   };
 
-  // ──────────────────────────────────────────────────────────────────
-  // PREPARE (call /api/prepare)
-  // ──────────────────────────────────────────────────────────────────
-
   const handlePrepare = async () => {
     if (!resumeFile) { setPrepError("Please upload a resume PDF."); return; }
     if (!jdText.trim()) { setPrepError("Please paste the job description."); return; }
@@ -695,10 +653,6 @@ function App() {
     }
   };
 
-  // ──────────────────────────────────────────────────────────────────
-  // START INTERVIEW
-  // ──────────────────────────────────────────────────────────────────
-
   const startInterview = async () => {
     if (questions.length === 0) { alert("Questions not loaded yet."); return; }
     stopRecording();
@@ -716,10 +670,27 @@ function App() {
     setCodeSubmissions([]);
     setCodeMap({});
     setLivekitConnected(false);
+
+    try {
+      await fetch("http://127.0.0.1:8000/api/interview/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: "session_" + Date.now(),
+          candidate_name: (resumeSummary as { name?: string }).name || "Candidate",
+          job_role: effectiveRole,
+          persona: interviewerPersona,
+          stress_mode: stressMode,
+          language: interviewLanguage
+        })
+      });
+    } catch (err) {
+      console.warn("Failed to register session start:", err);
+    }
+
     if (proctoringEnabled) startProctoring();
     setScreen("interview");
 
-    // Connect to LiveKit room for real-time voice interview
     try {
       const candidateName = (resumeSummary as { name?: string }).name || "Candidate";
       const tokenResp = await fetch("http://127.0.0.1:8000/api/livekit-token", {
@@ -735,13 +706,12 @@ function App() {
         dynacast: true,
       });
 
-      // Subscribe to agent audio track for playback
       room.on("trackSubscribed", (track) => {
         if (track.kind === Track.Kind.Audio) {
           const el = audioRef.current;
           if (el) {
             track.attach(el);
-            el.play().catch(() => { /* autoplay blocked */ });
+            el.play().catch(() => { /* ignore */ });
           }
         }
       });
@@ -756,19 +726,13 @@ function App() {
       await room.localParticipant.setMicrophoneEnabled(true);
       livekitRoomRef.current = room;
       setLivekitConnected(true);
-      console.log("Connected to LiveKit room:", room.name);
 
-      // Also start browser SpeechRecognition in parallel for live transcript display
       startRecording();
     } catch (e: unknown) {
       console.error("LiveKit connection failed:", e);
       alert(`LiveKit connection failed: ${(e as Error).message}. The interview will continue without live voice.`);
     }
   };
-
-  // ──────────────────────────────────────────────────────────────────
-  // CODE: RUN + SUBMIT
-  // ──────────────────────────────────────────────────────────────────
 
   const question = questions[currentQuestion];
 
@@ -813,7 +777,7 @@ function App() {
         const d = await resp.json();
         evaluation = d.evaluation;
       }
-    } catch { /* non-blocking */ }
+    } catch { /* ignore */ }
 
     const sub: CodeSubmission = {
       question_id: question.id,
@@ -829,16 +793,30 @@ function App() {
     alert("Code submitted!");
   };
 
-  // ──────────────────────────────────────────────────────────────────
-  // NEXT / FINISH QUESTION
-  // ──────────────────────────────────────────────────────────────────
-
   const nextQuestion = async () => {
     const latestAnswer = answerRef.current || answer;
     stopRecording();
     const updated = [...answers];
     updated[currentQuestion] = latestAnswer;
     setAnswers(updated);
+
+    try {
+      await fetch("http://127.0.0.1:8000/api/interview/process-turn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: "session_active",
+          question_id: String(question.id),
+          question_text: question.question,
+          candidate_answer: latestAnswer,
+          audio_duration_seconds: 30.0,
+          approved_questions: questions,
+          followup_depth: 0
+        })
+      });
+    } catch (err) {
+      console.warn("Turn sync error:", err);
+    }
 
     if (currentQuestion < questions.length - 1) {
       const next = currentQuestion + 1;
@@ -847,16 +825,13 @@ function App() {
       setAnswer(na);
       answerRef.current = na;
       finalTranscriptRef.current = na;
-      // Re-start speech recognition for the new question (LiveKit audio stays connected)
       if (livekitConnected) startRecording();
       return;
     }
 
-    // Final submission — answers are extracted server-side from the LiveKit transcript
     await submitInterviewEnd();
   };
 
-  // Submit the interview end via /api/answers
   const submitInterviewEnd = async () => {
     stopProctoring();
     const updated = [...answers];
@@ -892,7 +867,6 @@ function App() {
       alert(`Submission failed: ${(e as Error).message}`);
     }
 
-    // Disconnect LiveKit if connected
     if (livekitRoomRef.current) {
       try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
       livekitRoomRef.current = null;
@@ -902,7 +876,6 @@ function App() {
     setScreen("results");
   };
 
-  // Submit partial interview data (used when interview is halted due to proctoring violations)
   const submitPartialInterview = async () => {
     try {
       const resp = await fetch("http://127.0.0.1:8000/api/finish-interview", {
@@ -923,17 +896,12 @@ function App() {
         if (data.analysis) setAnalysis(data.analysis);
       }
     } catch {
-      // Non-blocking — partial data may not produce a full analysis
       setAnalysisError("Interview was halted. Partial analysis may not be available.");
     }
   };
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
-
-  // ──────────────────────────────────────────────────────────────────
-  // LINKEDIN OPTIMIZER
-  // ──────────────────────────────────────────────────────────────────
 
   const handleLinkedInAnalyze = async () => {
     if (!linkedinText.trim()) { setLinkedinError("Please paste your LinkedIn profile text."); return; }
@@ -955,10 +923,6 @@ function App() {
       setLinkedinLoading(false);
     }
   };
-
-  // ──────────────────────────────────────────────────────────────────
-  // CV RATER
-  // ──────────────────────────────────────────────────────────────────
 
   const handleCvRate = async () => {
     if (!cvFile) { setCvError("Please upload a resume PDF."); return; }
@@ -983,35 +947,24 @@ function App() {
     }
   };
 
-  // ──────────────────────────────────────────────────────────────────
-  // 3-STRIKE HALT: stop the interview when flagged for review
-  // ──────────────────────────────────────────────────────────────────
-
   useEffect(() => {
     if (flaggedForReview && screen === "interview") {
       stopRecording();
       stopProctoring();
-      // Disconnect LiveKit
       if (livekitRoomRef.current) {
         try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
         livekitRoomRef.current = null;
         setLivekitConnected(false);
       }
-      // Submit partial data and navigate to results
       submitPartialInterview();
       setScreen("results");
     }
-  }, [flaggedForReview, screen]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ──────────────────────────────────────────────────────────────────
-  // CLEANUP
-  // ──────────────────────────────────────────────────────────────────
+  }, [flaggedForReview, screen]);
 
   useEffect(() => {
     return () => {
       if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch { /* ignore */ } }
       stopProctoring();
-      // Cleanup LiveKit room on unmount
       if (livekitRoomRef.current) {
         try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
         livekitRoomRef.current = null;
@@ -1019,9 +972,27 @@ function App() {
     };
   }, [stopProctoring]);
 
-  // ══════════════════════════════════════════════════════════════════
-  // LINKEDIN SCREEN
-  // ══════════════════════════════════════════════════════════════════
+  if (screen === "progress") {
+    return (
+      <div className="app">
+        <header className="navbar">
+          <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
+            <div className="brand-icon"><Sparkles size={20} /></div>
+            <span>FirstRound</span>
+          </div>
+          <div className="nav-links">
+            <span onClick={() => setScreen("progress")} className="nav-active"><BarChart3 size={16} /> Progress Tracker</span>
+            <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}><LinkedinIcon size={16} /> LinkedIn</span>
+            <span onClick={() => setScreen("cv-rater")} style={{ cursor: "pointer" }}><FileText size={16} /> CV Rater</span>
+            <span onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>Home</span>
+          </div>
+        </header>
+        <main className="tool-page">
+          <ProgressDashboard />
+        </main>
+      </div>
+    );
+  }
 
   if (screen === "linkedin") {
     const result = linkedinResult as {
@@ -1040,6 +1011,7 @@ function App() {
             <span>FirstRound</span>
           </div>
           <div className="nav-links">
+            <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={16} /> Progress Tracker</span>
             <span className="nav-active"><LinkedinIcon size={16} /> LinkedIn Optimizer</span>
             <span onClick={() => setScreen("cv-rater")} style={{ cursor: "pointer" }}>CV Rater</span>
             <span onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>Home</span>
@@ -1153,10 +1125,6 @@ function App() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // CV RATER SCREEN
-  // ══════════════════════════════════════════════════════════════════
-
   if (screen === "cv-rater") {
     const result = cvResult as {
       overall_score?: number;
@@ -1178,6 +1146,7 @@ function App() {
             <span>FirstRound</span>
           </div>
           <div className="nav-links">
+            <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={16} /> Progress Tracker</span>
             <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}>LinkedIn Optimizer</span>
             <span className="nav-active"><FileText size={16} /> CV Rater</span>
             <span onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>Home</span>
@@ -1294,22 +1263,9 @@ function App() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // RESULTS SCREEN
-  // ══════════════════════════════════════════════════════════════════
-
   if (screen === "results") {
     const downloadPDF = () => {
-      const element = document.querySelector('.results-page');
-      const opt = {
-        margin: 0.5,
-        filename: 'FirstRound_Interview_Report.pdf',
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2 },
-        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
-      };
-      // @ts-ignore
-      window.html2pdf().set(opt).from(element).save();
+      window.open("http://127.0.0.1:8000/output/prep/interview_report.pdf", "_blank");
     };
 
     return (
@@ -1324,7 +1280,7 @@ function App() {
                 className="secondary-button"
                 style={{ marginLeft: 16 }}
               >
-                Download PDF
+                Download Professional PDF
               </button>
             )}
           </div>
@@ -1334,8 +1290,8 @@ function App() {
           <div className="results-header">
             <div className="success-icon"><CheckCircle2 size={42} /></div>
             <p className="eyebrow">INTERVIEW COMPLETE</p>
-            <h1>Your interview is complete.</h1>
-            <p>Your responses have been recorded. Your AI-powered performance analysis evaluates technical ability, communication and job alignment.</p>
+            <h1>Your interview evaluation is ready.</h1>
+            <p>Your AI-powered performance analysis evaluates technical ability, communication, and job alignment.</p>
           </div>
 
           {flaggedForReview && (
@@ -1382,60 +1338,24 @@ function App() {
                 );
               })}
 
-              {analysis.code_performance && analysis.code_performance.attempted > 0 && (
-                <div className="analysis-card">
-                  <h2>Code Performance</h2>
-                  <div className="code-perf-row">
-                    <span>Attempted: <strong>{analysis.code_performance.attempted}</strong></span>
-                    <span>Passed: <strong>{analysis.code_performance.passed}</strong></span>
-                    <span>Avg Score: <strong>{analysis.code_performance.average_score}/100</strong></span>
-                  </div>
-                  {analysis.code_performance.notes && <p>{analysis.code_performance.notes}</p>}
-                </div>
-              )}
-
-              {analysis.integrity && (analysis.integrity.flag_count > 0 || analysis.integrity.flagged_for_review) && (
-                <div className="analysis-card integrity-card">
-                  <h2>Integrity Report</h2>
-                  {analysis.integrity.flagged_for_review ? (
-                    <p className="flag-text">⚠️ This session was flagged for review ({analysis.integrity.flag_count} violation{analysis.integrity.flag_count !== 1 ? "s" : ""} detected).</p>
-                  ) : (
-                    <p>{analysis.integrity.flag_count} minor event(s) logged.</p>
-                  )}
-                  {analysis.integrity.flags?.map((f, i) => (
-                    <div key={i} className="flag-row">
-                      <span className="flag-type">{f.type.replace(/_/g, " ")}</span>
-                      <span className="flag-detail">{f.details}</span>
-                      <span className="flag-time">{new Date(f.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="analysis-card summary-card">
-                <h2>AI Summary</h2>
-                <p>{analysis.summary}</p>
-                <div className="recommendation">
-                  <strong>Recommendation</strong>
-                  <span>{analysis.recommendation}</span>
-                </div>
+              <div style={{ marginTop: 24 }}>
+                <PostInterviewChat sessionSummary={analysis} />
               </div>
             </div>
           )}
 
           <div className="results-actions">
-            <button className="primary-button" onClick={() => setScreen("home")}>
-              Back to Dashboard <ArrowRight size={18} />
+            <button className="primary-button" onClick={() => setScreen("progress")}>
+              View Performance Tracker <BarChart3 size={18} />
+            </button>
+            <button className="secondary-button" onClick={() => setScreen("home")}>
+              Back to Home <ArrowRight size={18} />
             </button>
           </div>
         </main>
       </div>
     );
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // INTERVIEW SCREEN
-  // ══════════════════════════════════════════════════════════════════
 
   if (screen === "interview") {
     if (!question) {
@@ -1470,7 +1390,6 @@ function App() {
         )}
 
         <main className={`interview-page ${isCoding ? "coding-layout" : ""}`}>
-          {/* Video self-view (corner panel when proctoring enabled) */}
           {cameraGranted && (
             <div className="video-corner">
               <video ref={videoRef} autoPlay muted playsInline className="video-preview" />
@@ -1494,13 +1413,11 @@ function App() {
             <span>{livekitConnected ? "Live voice interview connected" : isRecording ? "Listening to your answer..." : "AI interviewer"}</span>
           </div>
 
-          {/* Hidden audio element for LiveKit agent voice playback */}
           <audio ref={audioRef} style={{ display: "none" }} />
 
           <h1>{question.question}</h1>
 
           {isCoding ? (
-            /* ── CODING QUESTION LAYOUT ─────────────────────── */
             <div className="coding-panel">
               <div className="code-editor-section">
                 <div className="editor-toolbar">
@@ -1549,7 +1466,6 @@ function App() {
               </div>
             </div>
           ) : (
-            /* ── VOICE QUESTION LAYOUT ──────────────────────── */
             <>
               <p className="question-helper">
                 {livekitConnected ? "The AI interviewer is speaking live. Answer naturally when prompted." : isRecording ? "Speak naturally. Your answer will be transcribed automatically." : "Press Start Answer to begin speaking."}
@@ -1599,10 +1515,6 @@ function App() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // HOME SCREEN
-  // ══════════════════════════════════════════════════════════════════
-
   const candidateName = (resumeSummary as { name?: string }).name;
 
   return (
@@ -1610,6 +1522,7 @@ function App() {
       <header className="navbar">
         <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
         <div className="nav-links">
+          <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={15} /> Progress Tracker</span>
           <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}><LinkedinIcon size={15} /> LinkedIn</span>
           <span onClick={() => setScreen("cv-rater")} style={{ cursor: "pointer" }}><FileText size={15} /> CV Rater</span>
         </div>
@@ -1628,8 +1541,8 @@ function App() {
 
             <div className="trust-row">
               <div><CheckCircle2 size={17} />Resume-based questions</div>
-              <div><CheckCircle2 size={17} />AI evaluation</div>
-              <div><CheckCircle2 size={17} />Personalized feedback</div>
+              <div><CheckCircle2 size={17} />Adaptive AI coaching</div>
+              <div><CheckCircle2 size={17} />Progress tracking</div>
             </div>
           </div>
 
@@ -1640,7 +1553,6 @@ function App() {
             </div>
 
             {!prepDone ? (
-              /* ── PREP FORM ─────────────────────────────────── */
               <div className="prep-form">
                 <label className="field-label">Target Role</label>
                 <select
@@ -1666,10 +1578,21 @@ function App() {
                   value={interviewerPersona}
                   onChange={(e) => setInterviewerPersona(e.target.value)}
                 >
-                  <option>Friendly HR</option>
-                  <option>Strict HR</option>
-                  <option>Technical Interviewer</option>
-                  <option>Behavioral/Culture Fit</option>
+                  <option value="technical_lead">Senior Technical Lead</option>
+                  <option value="friendly_hr">Friendly HR Representative</option>
+                  <option value="hiring_manager">Engineering Hiring Manager</option>
+                  <option value="behavioral_coach">Behavioral & STAR Evaluator</option>
+                </select>
+
+                <label className="field-label">Intensity / Stress Mode</label>
+                <select
+                  className="role-select"
+                  value={stressMode}
+                  onChange={(e) => setStressMode(e.target.value)}
+                >
+                  <option value="normal">Normal (Balanced & Professional)</option>
+                  <option value="challenging">Challenging (Demands Concrete Proof)</option>
+                  <option value="stress_test">Stress Test Mode (High Pressure Simulation)</option>
                 </select>
 
                 <label className="field-label">Interview Language</label>
@@ -1678,9 +1601,9 @@ function App() {
                   value={interviewLanguage}
                   onChange={(e) => setInterviewLanguage(e.target.value)}
                 >
-                  <option>English</option>
-                  <option>Urdu</option>
-                  <option>Urdu-English Mix</option>
+                  <option value="English">English</option>
+                  <option value="Urdu">Urdu (اردو)</option>
+                  <option value="Urdu-English Mix">Urdu-English Mix</option>
                 </select>
 
                 <label className="field-label" style={{ marginTop: 12 }}>Upload Resume (PDF)</label>
@@ -1724,7 +1647,6 @@ function App() {
                 </button>
               </div>
             ) : (
-              /* ── POST-PREP: READY TO START ─────────────────── */
               <div className="ready-panel">
                 {candidateName && (
                   <div className="candidate-card">
@@ -1770,9 +1692,9 @@ function App() {
           </div>
           <div className="feature-grid">
             {[
-              { num: "01", icon: <FileText size={25} />, title: "Understand your profile", desc: "Your resume and job description are used to understand the skills the interview should focus on." },
-              { num: "02", icon: <Mic size={25} />, title: "Practice the interview", desc: "Answer realistic questions designed around your actual experience and target role." },
-              { num: "03", icon: <Target size={25} />, title: "Get evaluated", desc: "Receive structured feedback covering technical performance, communication and job alignment." },
+              { num: "01", icon: <FileText size={25} />, title: "Understand your profile", desc: "Your resume and job description are used to generate custom questions." },
+              { num: "02", icon: <Mic size={25} />, title: "Practice the interview", desc: "Answer adaptive questions driven by your persona and stress mode settings." },
+              { num: "03", icon: <Target size={25} />, title: "Get evaluated", desc: "Receive evidence-based scores, downloadable PDF reports, and track long-term progress." },
             ].map(({ num, icon, title, desc }) => (
               <div key={num} className="feature-card">
                 <div className="feature-number">{num}</div>
