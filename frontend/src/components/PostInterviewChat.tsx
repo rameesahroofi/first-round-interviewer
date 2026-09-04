@@ -5,6 +5,8 @@ interface PostInterviewChatProps {
   sessionSummary?: any;
 }
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
 export const PostInterviewChat: React.FC<PostInterviewChatProps> = ({ sessionSummary }) => {
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'ai'; text: string }>>([
     { sender: 'ai', text: 'Hello! I am your AI Interview Coach. Ask me anything about your interview scores, speaking pace, or how to improve specific answers!' }
@@ -21,7 +23,7 @@ export const PostInterviewChat: React.FC<PostInterviewChatProps> = ({ sessionSum
     setLoading(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/interview/post-chat', {
+      const response = await fetch(`${API_BASE}/api/interview/post-chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

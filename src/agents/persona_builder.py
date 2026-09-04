@@ -51,7 +51,9 @@ class PersonaBuilderAgent:
     ) -> str:
         persona = PERSONA_CONFIGS.get(persona_key, PERSONA_CONFIGS["technical_lead"])
         stress = STRESS_LEVELS.get(stress_mode, STRESS_LEVELS["normal"])
-        lang_inst = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["english"])
+        # Normalize language key: frontend sends "English", "Urdu-English Mix" etc.
+        lang_key = language.lower().replace("-", "_").replace(" ", "_") if language else "english"
+        lang_inst = LANGUAGE_INSTRUCTIONS.get(lang_key, LANGUAGE_INSTRUCTIONS["english"])
 
         return f"""
 YOU ARE AN AI INTERVIEWER WITH THE FOLLOWING SPECIFICATION:

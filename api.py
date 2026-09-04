@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import livekit.api as lk_api
 from pydantic import BaseModel
 
@@ -65,6 +67,11 @@ active_sessions: Dict[str, InterviewSessionMemory] = {}
 # --------------------------------------------------
 
 app = FastAPI(title="FirstRound API")
+
+# Serve output files (PDF reports, etc.) as static files
+output_dir = Path("output")
+output_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/output", StaticFiles(directory="output"), name="output")
 
 app.add_middleware(
     CORSMiddleware,
@@ -586,10 +593,13 @@ def mint_livekit_token(request: LiveKitTokenRequest):
     livekit_url = os.getenv("LIVEKIT_URL")
 
     if not api_key or not api_secret or not livekit_url:
-        raise HTTPException(
-            status_code=500,
-            detail="LiveKit environment variables are not configured.",
-        )
+        return {
+            "available": False,
+            "token": None,
+            "url": None,
+            "room_name": None,
+            "message": "LiveKit credentials not set. Using browser AI voice engine."
+        }
 
     room_name = request.room_name or f"interview-{uuid.uuid4()}"
     identity = f"candidate-{uuid.uuid4().hex[:8]}"
@@ -610,10 +620,12 @@ def mint_livekit_token(request: LiveKitTokenRequest):
     )
 
     return {
+        "available": True,
         "token": token,
         "url": livekit_url,
         "room_name": room_name,
     }
+
 
 
 # --------------------------------------------------
@@ -694,10 +706,59 @@ def finish_interview(request: FinishInterviewRequest):
             json.dumps(final_analysis, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+        # Save session into ProgressTrackerDB
+        ProgressTrackerDB.save_session({
+            "session_id": uuid.uuid4().hex[:8],
+            "job_role": jd.get("title", jd.get("role", "Software Engineer")),
+            "overall_score": final_analysis.get("overall_score", 0),
+            "technical_score": final_analysis.get("technical_score", 0),
+            "communication_score": final_analysis.get("communication_score", 0),
+            "wpm": speech_metrics.get("wpm", 0),
+            "filler_count": speech_metrics.get("total_filler_words", 0),
+            "weak_areas": final_analysis.get("areas_for_improvement", final_analysis.get("weaknesses", []))
+        })
+
+        interview_id = save_interview_history(
+            final_analysis=final_analysis,
+            answers=extracted,
+            answer_evaluation=answer_evaluation,
+            duration_seconds=request.duration_seconds,
+            body_language_score=request.body_language_score,
+        )
+
+        try:
+            report_md = generate_report(final_analysis)
+            FINAL_REPORT_PATH.write_text(report_md, encoding="utf-8")
+        except Exception as err:
+            print(f"Failed to generate report markdown: {err}")
+
+        # Generate downloadable PDF
+        try:
+            ProfessionalPDFReportGenerator.generate_pdf({
+                "candidate_name": resume.get("candidate_name", "Candidate"),
+                "job_role": jd.get("title", jd.get("role", "Software Engineer")),
+                "overall_score": final_analysis.get("overall_score", 0),
+                "technical_score": final_analysis.get("technical_score", 0),
+                "communication_score": final_analysis.get("communication_score", 0),
+                "wpm": speech_metrics.get("wpm", 0),
+                "filler_count": speech_metrics.get("total_filler_words", 0),
+                "questions": [
+                    {
+                        "question": ev.get("question"),
+                        "score": ev.get("evaluation", {}).get("score", 0),
+                        "answer": ev.get("candidate_answer"),
+                        "rationale": ev.get("evaluation", {}).get("feedback", "")
+                    } for ev in evaluations
+                ]
+            }, output_path="output/prep/interview_report.pdf")
+        except Exception as pdf_err:
+            print(f"Failed to generate PDF report: {pdf_err}")
+
         return {
             "success": True,
             "message": "Interview evaluated successfully.",
             "analysis": final_analysis,
+            "interview_id": interview_id,
         }
 
     except FileNotFoundError as e:

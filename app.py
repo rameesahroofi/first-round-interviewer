@@ -12,14 +12,14 @@ RESUME_PATH = Path("output/prep/resume.json")
 JD_PATH = Path("output/prep/jd.json")
 GAP_ANALYSIS_PATH = Path("output/prep/gap_analysis.json")
 
-if "plan_approved" not in st.session_state:
-    st.session_state.plan_approved = APPROVED_PLAN_PATH.exists()
-
 st.set_page_config(
     page_title="Interview Question Review",
     page_icon="🎤",
     layout="wide",
 )
+
+if "plan_approved" not in st.session_state:
+    st.session_state.plan_approved = APPROVED_PLAN_PATH.exists()
 
 st.title("🎤 Interview Question Review")
 st.write(

@@ -105,6 +105,8 @@ declare global {
   }
 }
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
 const ROLE_OPTIONS = [
   "Software Engineer",
   "Backend Engineer",
@@ -356,8 +358,10 @@ function App() {
   const [cvResult, setCvResult] = useState<Record<string, unknown> | null>(null);
   const [cvError, setCvError] = useState("");
 
-  // LiveKit state
+  // LiveKit & AI Voice state
   const [livekitConnected, setLivekitConnected] = useState(false);
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true);
   const livekitRoomRef = useRef<Room | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -365,12 +369,36 @@ function App() {
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const finalTranscriptRef = useRef("");
   const answerRef = useRef("");
+  const recordingStartRef = useRef<number>(0);
+
+  // Turn processing state
+  const [turnProcessing, setTurnProcessing] = useState(false);
 
   const effectiveRole = selectedRole === "Other (type your own)" ? customRole : selectedRole;
 
+  const speakQuestion = useCallback((text: string) => {
+    if (!aiVoiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      const voices = window.speechSynthesis.getVoices();
+      const englishVoice = voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Natural") || v.name.includes("Samantha") || v.name.includes("David"))) || voices.find((v) => v.lang.startsWith("en"));
+      if (englishVoice) utterance.voice = englishVoice;
+      utterance.onstart = () => setIsAiSpeaking(true);
+      utterance.onend = () => setIsAiSpeaking(false);
+      utterance.onerror = () => setIsAiSpeaking(false);
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      setIsAiSpeaking(false);
+    }
+  }, [aiVoiceEnabled]);
+
+
   useEffect(() => {
     if (!prepDone) return;
-    fetch("http://127.0.0.1:8000/api/questions")
+    fetch(`${API_BASE}/api/questions`)
       .then((r) => r.json())
       .then((data) => setQuestions(data.questions ?? []))
       .catch(console.error);
@@ -381,7 +409,7 @@ function App() {
     if (analysis) return;
     setAnalysisLoading(true);
     setAnalysisError("");
-    fetch("http://127.0.0.1:8000/api/analysis")
+    fetch(`${API_BASE}/api/analysis`)
       .then((r) => r.json())
       .then((data) => setAnalysis(data))
       .catch(() => setAnalysisError("Unable to load analysis. Make sure the backend is running."))
@@ -578,6 +606,7 @@ function App() {
     recognition.interimResults = true;
     recognition.lang = "en-US";
     finalTranscriptRef.current = answerRef.current.trim();
+    recordingStartRef.current = Date.now();
     recognition.onstart = () => setIsRecording(true);
     recognition.onresult = (event: SpeechRecognitionEventLike) => {
       let newFinal = "";
@@ -632,7 +661,7 @@ function App() {
       form.append("persona", interviewerPersona);
       form.append("language", interviewLanguage);
 
-      const resp = await fetch("http://127.0.0.1:8000/api/prepare", {
+      const resp = await fetch(`${API_BASE}/api/prepare`, {
         method: "POST",
         body: form,
       });
@@ -672,7 +701,7 @@ function App() {
     setLivekitConnected(false);
 
     try {
-      await fetch("http://127.0.0.1:8000/api/interview/start", {
+      await fetch(`${API_BASE}/api/interview/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -693,44 +722,56 @@ function App() {
 
     try {
       const candidateName = (resumeSummary as { name?: string }).name || "Candidate";
-      const tokenResp = await fetch("http://127.0.0.1:8000/api/livekit-token", {
+      const tokenResp = await fetch(`${API_BASE}/api/livekit-token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidate_name: candidateName }),
       });
-      if (!tokenResp.ok) throw new Error("Failed to get LiveKit token");
-      const { token, url } = await tokenResp.json();
+      if (!tokenResp.ok) throw new Error("Failed to reach token endpoint");
+      const { available, token, url } = await tokenResp.json();
 
-      const room = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-      });
+      if (available && token && url) {
+        const room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+        });
 
-      room.on("trackSubscribed", (track) => {
-        if (track.kind === Track.Kind.Audio) {
-          const el = audioRef.current;
-          if (el) {
-            track.attach(el);
-            el.play().catch(() => { /* ignore */ });
+        room.on("trackSubscribed", (track) => {
+          if (track.kind === Track.Kind.Audio) {
+            const el = audioRef.current;
+            if (el) {
+              track.attach(el);
+              el.play().catch(() => { /* ignore */ });
+            }
           }
+        });
+
+        room.on("trackUnsubscribed", (track) => {
+          if (track.kind === Track.Kind.Audio) {
+            track.detach().forEach((el) => el.remove());
+          }
+        });
+
+        await room.connect(url, token);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        livekitRoomRef.current = room;
+        setLivekitConnected(true);
+        startRecording();
+      } else {
+        // Fallback to browser AI voice
+        setLivekitConnected(false);
+        const firstQ = questions[0]?.question;
+        if (firstQ) {
+          setTimeout(() => speakQuestion(firstQ), 600);
         }
-      });
-
-      room.on("trackUnsubscribed", (track) => {
-        if (track.kind === Track.Kind.Audio) {
-          track.detach().forEach((el) => el.remove());
-        }
-      });
-
-      await room.connect(url, token);
-      await room.localParticipant.setMicrophoneEnabled(true);
-      livekitRoomRef.current = room;
-      setLivekitConnected(true);
-
-      startRecording();
+      }
     } catch (e: unknown) {
-      console.error("LiveKit connection failed:", e);
-      alert(`LiveKit connection failed: ${(e as Error).message}. The interview will continue without live voice.`);
+      console.warn("LiveKit unavailable, using built-in browser voice engine:", e);
+      setLivekitConnected(false);
+      const firstQ = questions[0]?.question;
+      if (firstQ) {
+        setTimeout(() => speakQuestion(firstQ), 600);
+      }
     }
   };
 
@@ -760,7 +801,7 @@ function App() {
 
     let evaluation: Record<string, unknown> | undefined;
     try {
-      const resp = await fetch("http://127.0.0.1:8000/api/evaluate-code", {
+      const resp = await fetch(`${API_BASE}/api/evaluate-code`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -794,14 +835,23 @@ function App() {
   };
 
   const nextQuestion = async () => {
+    if (turnProcessing) return;
     const latestAnswer = answerRef.current || answer;
     stopRecording();
+
+    // Calculate actual audio duration from recording
+    const audioDuration = recordingStartRef.current > 0
+      ? Math.round((Date.now() - recordingStartRef.current) / 1000 * 10) / 10
+      : 30.0;
+    recordingStartRef.current = 0;
+
     const updated = [...answers];
     updated[currentQuestion] = latestAnswer;
     setAnswers(updated);
+    setTurnProcessing(true);
 
     try {
-      await fetch("http://127.0.0.1:8000/api/interview/process-turn", {
+      await fetch(`${API_BASE}/api/interview/process-turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -809,13 +859,15 @@ function App() {
           question_id: String(question.id),
           question_text: question.question,
           candidate_answer: latestAnswer,
-          audio_duration_seconds: 30.0,
+          audio_duration_seconds: audioDuration,
           approved_questions: questions,
           followup_depth: 0
         })
       });
     } catch (err) {
       console.warn("Turn sync error:", err);
+    } finally {
+      setTurnProcessing(false);
     }
 
     if (currentQuestion < questions.length - 1) {
@@ -825,7 +877,12 @@ function App() {
       setAnswer(na);
       answerRef.current = na;
       finalTranscriptRef.current = na;
-      if (livekitConnected) startRecording();
+      if (livekitConnected) {
+        startRecording();
+      } else {
+        const nextQ = questions[next]?.question;
+        if (nextQ) speakQuestion(nextQ);
+      }
       return;
     }
 
@@ -834,7 +891,13 @@ function App() {
 
   const submitInterviewEnd = async () => {
     stopProctoring();
+    stopRecording();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsAiSpeaking(false);
     const updated = [...answers];
+
     if (answer) updated[currentQuestion] = answer;
 
     const submission = {
@@ -855,7 +918,7 @@ function App() {
     };
 
     try {
-      const resp = await fetch("http://127.0.0.1:8000/api/answers", {
+      const resp = await fetch(`${API_BASE}/api/answers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(submission),
@@ -876,29 +939,6 @@ function App() {
     setScreen("results");
   };
 
-  const submitPartialInterview = async () => {
-    try {
-      const resp = await fetch("http://127.0.0.1:8000/api/finish-interview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code_submissions: codeSubmissions,
-          integrity_flags: integrityFlags,
-          flagged_for_review: true,
-          duration_seconds: Math.max(0, 30 * 60 - timeLeft),
-          body_language_score: proctoringStatsRef.current.total > 0
-            ? (proctoringStatsRef.current.eyeContact / proctoringStatsRef.current.total) * 100
-            : null,
-        }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.analysis) setAnalysis(data.analysis);
-      }
-    } catch {
-      setAnalysisError("Interview was halted. Partial analysis may not be available.");
-    }
-  };
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
@@ -909,7 +949,7 @@ function App() {
     setLinkedinError("");
     setLinkedinResult(null);
     try {
-      const resp = await fetch("http://127.0.0.1:8000/api/linkedin", {
+      const resp = await fetch(`${API_BASE}/api/linkedin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profile_text: linkedinText }),
@@ -933,7 +973,7 @@ function App() {
       const form = new FormData();
       form.append("resume_file", cvFile);
       form.append("jd_text", cvJdText);
-      const resp = await fetch("http://127.0.0.1:8000/api/cv-rate", {
+      const resp = await fetch(`${API_BASE}/api/cv-rate`, {
         method: "POST",
         body: form,
       });
@@ -947,19 +987,8 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (flaggedForReview && screen === "interview") {
-      stopRecording();
-      stopProctoring();
-      if (livekitRoomRef.current) {
-        try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
-        livekitRoomRef.current = null;
-        setLivekitConnected(false);
-      }
-      submitPartialInterview();
-      setScreen("results");
-    }
-  }, [flaggedForReview, screen]);
+  // Proctoring flags are logged for report analysis without prematurely aborting the interview
+
 
   useEffect(() => {
     return () => {
@@ -1265,7 +1294,7 @@ function App() {
 
   if (screen === "results") {
     const downloadPDF = () => {
-      window.open("http://127.0.0.1:8000/output/prep/interview_report.pdf", "_blank");
+      window.open(`${API_BASE}/output/prep/interview_report.pdf`, "_blank");
     };
 
     return (
@@ -1407,10 +1436,38 @@ function App() {
           </div>
 
           <div className="live-interviewer-status">
-            <div className={`voice-indicator ${livekitConnected ? "speaking" : ""}`}>
-              {livekitConnected ? <Radio size={20} /> : <Sparkles size={20} />}
+            <div className={`voice-indicator ${livekitConnected || isAiSpeaking ? "speaking" : ""}`}>
+              {livekitConnected ? <Radio size={18} /> : <Sparkles size={18} />}
             </div>
-            <span>{livekitConnected ? "Live voice interview connected" : isRecording ? "Listening to your answer..." : "AI interviewer"}</span>
+            <span>
+              {livekitConnected
+                ? "Live voice (LiveKit) connected"
+                : isAiSpeaking
+                ? "AI interviewer is speaking..."
+                : isRecording
+                ? "Listening to your answer..."
+                : "AI Interviewer (Voice Active)"}
+            </span>
+            <button
+              className="voice-action-btn"
+              onClick={() => speakQuestion(question.question)}
+              title="Repeat question audio"
+            >
+              🔊 Repeat Audio
+            </button>
+            <button
+              className="voice-action-btn"
+              onClick={() => {
+                if (isAiSpeaking && typeof window !== "undefined" && "speechSynthesis" in window) {
+                  window.speechSynthesis.cancel();
+                  setIsAiSpeaking(false);
+                }
+                setAiVoiceEnabled((prev) => !prev);
+              }}
+              title={aiVoiceEnabled ? "Mute AI voice" : "Enable AI voice"}
+            >
+              {aiVoiceEnabled ? "Mute Voice" : "Unmute Voice"}
+            </button>
           </div>
 
           <audio ref={audioRef} style={{ display: "none" }} />
@@ -1458,7 +1515,7 @@ function App() {
                     }
                   </div>
                   <textarea
-                    value={answer}
+                    value={answer || ""}
                     onChange={(e) => { setAnswer(e.target.value); answerRef.current = e.target.value; finalTranscriptRef.current = e.target.value; }}
                     placeholder="Your verbal explanation will appear here..."
                   />
@@ -1482,7 +1539,7 @@ function App() {
                   }
                 </div>
                 <textarea
-                  value={answer}
+                  value={answer || ""}
                   onChange={(e) => { const v = e.target.value; setAnswer(v); answerRef.current = v; finalTranscriptRef.current = v; }}
                   placeholder={isRecording ? "Speak your answer..." : "Your spoken answer will appear here..."}
                 />
@@ -1496,12 +1553,31 @@ function App() {
           )}
 
           <div className="interview-actions">
-            <button className="secondary-button" onClick={() => { stopRecording(); stopProctoring(); if (livekitRoomRef.current) { try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ } livekitRoomRef.current = null; setLivekitConnected(false); } setScreen("home"); }}>
+            <button className="secondary-button" onClick={() => {
+              stopRecording();
+              stopProctoring();
+              if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                window.speechSynthesis.cancel();
+              }
+              setIsAiSpeaking(false);
+              if (livekitRoomRef.current) {
+                try { livekitRoomRef.current.disconnect(); } catch { /* ignore */ }
+                livekitRoomRef.current = null;
+                setLivekitConnected(false);
+              }
+              setScreen("home");
+            }}>
               Exit Interview
             </button>
-            <button className="primary-button" onClick={nextQuestion}>
-              {currentQuestion === questions.length - 1 ? "Finish Interview" : "Next Question"}
-              <ChevronRight size={18} />
+            <button className="primary-button" onClick={nextQuestion} disabled={turnProcessing}>
+              {turnProcessing ? (
+                <><span className="spinner" /> Processing...</>
+              ) : (
+                <>
+                  {currentQuestion === questions.length - 1 ? "Finish Interview" : "Next Question"}
+                  <ChevronRight size={18} />
+                </>
+              )}
             </button>
           </div>
 

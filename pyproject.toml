@@ -18,6 +18,7 @@ dependencies = [
     "google-genai",
     "streamlit",
     "uvicorn[standard]",
+    "reportlab",
 ]
 
 [tool.livekit]

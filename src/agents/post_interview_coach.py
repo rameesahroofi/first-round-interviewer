@@ -16,16 +16,19 @@ class PostInterviewCoachAgent:
         query_lower = query.lower()
         
         if "score" in query_lower or "overall" in query_lower:
-            return (f"Your overall score was {session_data.get('overall_score', 0)}/10. "
-                    f"Technical Knowledge: {session_data.get('technical_score', 0)}/10, "
-                    f"Communication: {session_data.get('communication_score', 0)}/10.")
+            return (f"Your overall score was {session_data.get('overall_score', 0)}/100. "
+                    f"Technical Knowledge: {session_data.get('technical_score', 0)}/100, "
+                    f"Communication: {session_data.get('communication_score', 0)}/100.")
 
         if "communication" in query_lower or "speaking" in query_lower or "pace" in query_lower:
-            return (f"Your speaking pace was {session_data.get('wpm', 0)} WPM with a total of "
-                    f"{session_data.get('filler_count', 0)} filler words detected.")
+            speech = session_data.get("speech_analysis", {})
+            wpm = speech.get("wpm", session_data.get("wpm", 0))
+            fillers = speech.get("total_filler_words", session_data.get("filler_count", 0))
+            return (f"Your speaking pace was {wpm} WPM with a total of "
+                    f"{fillers} filler words detected.")
 
         if "weak" in query_lower or "improve" in query_lower:
-            weaknesses = session_data.get("weak_areas", [])
+            weaknesses = session_data.get("weak_areas", session_data.get("weaknesses", []))
             if weaknesses:
                 return f"Main improvement target: Focus on {', '.join(weaknesses)}."
             return "You performed strongly across all evaluated criteria."

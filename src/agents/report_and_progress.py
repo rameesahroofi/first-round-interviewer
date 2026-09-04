@@ -99,9 +99,9 @@ class ProfessionalPDFReportGenerator:
         metrics_table_data = [
             ["Overall Score", "Technical", "Communication", "Speaking Pace", "Filler Words"],
             [
-                f"{session_data.get('overall_score', 0)}/10",
-                f"{session_data.get('technical_score', 0)}/10",
-                f"{session_data.get('communication_score', 0)}/10",
+                f"{session_data.get('overall_score', 0)}/100",
+                f"{session_data.get('technical_score', 0)}/100",
+                f"{session_data.get('communication_score', 0)}/100",
                 f"{session_data.get('wpm', 0)} WPM",
                 f"{session_data.get('filler_count', 0)}"
             ]
@@ -122,7 +122,7 @@ class ProfessionalPDFReportGenerator:
         # Question Analysis Section
         story.append(Paragraph("Detailed Question-by-Question Evaluation", heading2))
         for idx, q_item in enumerate(session_data.get("questions", []), 1):
-            story.append(Paragraph(f"<b>Q{idx}: {q_item.get('question')}</b> (Score: {q_item.get('score')}/10)", styles['Normal']))
+            story.append(Paragraph(f"<b>Q{idx}: {q_item.get('question')}</b> (Score: {q_item.get('score')}/100)", styles['Normal']))
             story.append(Paragraph(f"<i>Answer:</i> {q_item.get('answer')}", styles['Normal']))
             story.append(Paragraph(f"<b>Evaluation Rationale:</b> {q_item.get('rationale')}", styles['Normal']))
             story.append(Spacer(1, 8))

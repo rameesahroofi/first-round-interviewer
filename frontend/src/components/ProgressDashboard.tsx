@@ -13,12 +13,14 @@ interface SessionHistory {
   weak_areas: string[];
 }
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
 export const ProgressDashboard: React.FC = () => {
   const [history, setHistory] = useState<SessionHistory[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/interview/history')
+    fetch(`${API_BASE}/api/interview/history`)
       .then((res) => res.json())
       .then((data) => {
         setHistory(data);
@@ -48,7 +50,7 @@ export const ProgressDashboard: React.FC = () => {
             <div className="bg-slate-800 p-4 rounded-lg border border-slate-700">
               <span className="text-slate-400 text-sm">Latest Score</span>
               <p className="text-3xl font-bold text-emerald-400">
-                {history[history.length - 1]?.overall_score || 0}/10
+                {history[history.length - 1]?.overall_score || 0}/100
               </p>
             </div>
             <div className="bg-slate-800 p-4 rounded-lg border border-slate-700">
@@ -77,9 +79,9 @@ export const ProgressDashboard: React.FC = () => {
                   <tr key={idx} className="border-b border-slate-800/50 hover:bg-slate-800/40">
                     <td className="p-3 text-slate-300">{session.date}</td>
                     <td className="p-3 font-medium text-indigo-300">{session.job_role}</td>
-                    <td className="p-3 font-bold text-emerald-400">{session.overall_score}/10</td>
-                    <td className="p-3">{session.technical_score}/10</td>
-                    <td className="p-3">{session.communication_score}/10</td>
+                    <td className="p-3 font-bold text-emerald-400">{session.overall_score}/100</td>
+                    <td className="p-3">{session.technical_score}/100</td>
+                    <td className="p-3">{session.communication_score}/100</td>
                     <td className="p-3 text-slate-400">{session.wpm} WPM ({session.filler_count} fillers)</td>
                   </tr>
                 ))}

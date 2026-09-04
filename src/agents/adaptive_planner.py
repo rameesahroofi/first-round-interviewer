@@ -70,11 +70,12 @@ class AdaptivePlannerAgent:
 
     def _get_next_approved_root(self, question_bank: List[Dict[str, Any]], memory: InterviewSessionMemory) -> Dict[str, Any]:
         for q in question_bank:
-            if q["id"] not in memory.topics_covered:
+            q_id = q.get("id", q.get("question_id", ""))
+            if q_id not in memory.topics_covered:
                 return {
                     "action": "ASK_ROOT_QUESTION",
-                    "question_id": q["id"],
-                    "question_text": q["text"],
+                    "question_id": q_id,
+                    "question_text": q.get("question", q.get("text", "")),
                     "source": "APPROVED_BANK"
                 }
         return {"action": "END_INTERVIEW", "message": "All human-approved questions completed."}
