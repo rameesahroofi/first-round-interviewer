@@ -86,7 +86,7 @@ class ProfessionalPDFReportGenerator:
         story = []
 
         # Document Header
-        story.append(Paragraph("First Round AI — Executive Interview Coaching Report", title_style))
+        story.append(Paragraph("Vetto — Executive Interview Coaching Report", title_style))
         story.append(Paragraph(
             f"Candidate: <b>{session_data.get('candidate_name', 'Candidate')}</b> | "
             f"Role: <b>{session_data.get('job_role', 'Software Engineer')}</b> | "

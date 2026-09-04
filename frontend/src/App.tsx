@@ -1007,7 +1007,7 @@ function App() {
         <header className="navbar">
           <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
             <div className="brand-icon"><Sparkles size={20} /></div>
-            <span>FirstRound</span>
+            <span>Vetto</span>
           </div>
           <div className="nav-links">
             <span onClick={() => setScreen("progress")} className="nav-active"><BarChart3 size={16} /> Progress Tracker</span>
@@ -1037,7 +1037,7 @@ function App() {
         <header className="navbar">
           <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
             <div className="brand-icon"><Sparkles size={20} /></div>
-            <span>FirstRound</span>
+            <span>Vetto</span>
           </div>
           <div className="nav-links">
             <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={16} /> Progress Tracker</span>
@@ -1172,7 +1172,7 @@ function App() {
         <header className="navbar">
           <div className="brand" onClick={() => setScreen("home")} style={{ cursor: "pointer" }}>
             <div className="brand-icon"><Sparkles size={20} /></div>
-            <span>FirstRound</span>
+            <span>Vetto</span>
           </div>
           <div className="nav-links">
             <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={16} /> Progress Tracker</span>
@@ -1300,7 +1300,7 @@ function App() {
     return (
       <div className="app">
         <header className="navbar">
-          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
+          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>Vetto</span></div>
           <div className="nav-status">
             <CheckCircle2 size={18} /> Interview completed
             {analysis && (
@@ -1402,7 +1402,7 @@ function App() {
     return (
       <div className="app interview-app">
         <header className="navbar interview-navbar">
-          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
+          <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>Vetto</span></div>
           <div className="question-counter">Question {currentQuestion + 1} of {questions.length}</div>
           <div className="timer"><Clock3 size={17} />{formatTime(timeLeft)}</div>
         </header>
@@ -1596,7 +1596,7 @@ function App() {
   return (
     <div className="app">
       <header className="navbar">
-        <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>FirstRound</span></div>
+        <div className="brand"><div className="brand-icon"><Sparkles size={20} /></div><span>Vetto</span></div>
         <div className="nav-links">
           <span onClick={() => setScreen("progress")} style={{ cursor: "pointer" }}><BarChart3 size={15} /> Progress Tracker</span>
           <span onClick={() => setScreen("linkedin")} style={{ cursor: "pointer" }}><LinkedinIcon size={15} /> LinkedIn</span>
@@ -1763,7 +1763,7 @@ function App() {
 
         <section className="feature-section">
           <div className="section-heading">
-            <p className="eyebrow">HOW FIRSTROUND WORKS</p>
+            <p className="eyebrow">HOW VETTO WORKS</p>
             <h2>Prepare with purpose.</h2>
           </div>
           <div className="feature-grid">

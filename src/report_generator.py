@@ -104,7 +104,7 @@ def generate_report(data: dict) -> str:
 {body_analysis.get("feedback", "")}
 """
 
-    report = f"""# FirstRound Interview Report
+    report = f"""# Vetto Interview Report
 
 ## Overall Assessment
 

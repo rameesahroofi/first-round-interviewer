@@ -66,7 +66,7 @@ active_sessions: Dict[str, InterviewSessionMemory] = {}
 # FASTAPI APP & CORS
 # --------------------------------------------------
 
-app = FastAPI(title="FirstRound API")
+app = FastAPI(title="Vetto API")
 
 # Serve output files (PDF reports, etc.) as static files
 output_dir = Path("output")
@@ -841,4 +841,4 @@ async def rate_cv(
 
 @app.get("/")
 def root():
-    return {"message": "FirstRound API is running."}
+    return {"message": "Vetto API is running."}
