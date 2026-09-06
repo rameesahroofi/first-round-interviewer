@@ -1,10 +1,10 @@
-# FirstRound — Full Product Audit Report
+# Vetto — Full Product Audit Report
 
 ## 1. Summary
 
 **Overall health: Good — demo-ready with minor caveats.**
 
-The FirstRound AI Interviewer is a functional, well-structured full-stack application. The core user journey — upload resume, paste JD, generate tailored questions, conduct a voice-assisted interview with coding support, and receive an AI-evaluated performance report — works end-to-end. The frontend is polished with a professional dark-theme UI, all navigation paths resolve correctly, and the backend API handles both happy paths and error cases gracefully. The LangGraph pipeline produces genuinely resume-aware and JD-specific interview questions.
+The Vetto AI Interviewer is a functional, well-structured full-stack application. The core user journey — upload resume, paste JD, generate tailored questions, conduct a voice-assisted interview with coding support, and receive an AI-evaluated performance report — works end-to-end. The frontend is polished with a professional dark-theme UI, all navigation paths resolve correctly, and the backend API handles both happy paths and error cases gracefully. The LangGraph pipeline produces genuinely resume-aware and JD-specific interview questions.
 
 The most significant bugs found were: missing `reportlab` dependency, broken PDF download (no static file mount), missing report/history generation in the `/api/finish-interview` endpoint, score scale mismatches (`/10` vs `/100`), a crash in the adaptive planner (`q["text"]` vs `q["question"]`), and a Streamlit startup ordering issue. All have been fixed during this audit.
 
@@ -43,7 +43,7 @@ All environment credentials (GOOGLE_API_KEY, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 **Status: ✅ Working — LiveKit JWT token minting verified**
 
 - `.env` configured with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. All loaded via `python-dotenv` with `load_dotenv(override=True)`.
-- `/api/livekit-token` returns `available: true` with a valid signed JWT token, the LiveKit Cloud URL (`wss://firstround-w8jz601g.livekit.cloud`), and a unique room name per call.
+- `/api/livekit-token` returns `available: true` with a valid signed JWT token, the LiveKit Cloud URL (`wss://Vetto-w8jz601g.livekit.cloud`), and a unique room name per call.
 - Token JWT contains correct claims: `video.roomJoin: true`, `canPublish: true`, `canSubscribe: true`, `canPublishData: true`, with 6-hour expiry.
 - The frontend can now connect to LiveKit for real-time voice interviews when the LiveKit agent worker is running.
 - Browser `SpeechSynthesis`/`SpeechRecognition` fallback still available if LiveKit connection fails.

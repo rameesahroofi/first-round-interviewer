@@ -101,7 +101,7 @@ class Interviewer(Agent):
         language_instruction = f"IMPORTANT: You MUST conduct the entire interview in {language}. If the language is an Urdu-English mix, seamlessly blend both languages as is common in Pakistan (using Urdu grammar with English technical terms). However, the approved questions are provided in English; you must TRANSLATE them naturally on the fly into {language} when asking them."
 
         super().__init__(
-            instructions=f"""You are an expert human interviewer conducting a first-round interview
+            instructions=f"""You are an expert human interviewer conducting a Vetto interview
 for the role of {role}. You are speaking with {name}.
 
 Your Persona: {persona}

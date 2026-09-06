@@ -1,6 +1,6 @@
-# FirstRound — AI-Powered First-Round Interviewer
+# Vetto — AI-Powered vetto Interviewer
 
-An AI-powered first-round technical interviewer that conducts realistic, resume-aware voice interviews using a live LLM agent, evaluates candidate responses with Gemini, and produces structured performance reports.
+An AI-powered vetto technical interviewer that conducts realistic, resume-aware voice interviews using a live LLM agent, evaluates candidate responses with Gemini, and produces structured performance reports.
 
 ## Features
 
@@ -15,7 +15,7 @@ An AI-powered first-round technical interviewer that conducts realistic, resume-
 ## Project Structure
 
 ```
-first-round-interviewer/
+vetto-interviewer/
 ├── api.py                     # FastAPI backend (REST API)
 ├── app.py                     # Streamlit question review tool
 ├── frontend/                  # Vite + React frontend

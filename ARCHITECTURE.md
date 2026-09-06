@@ -2,7 +2,7 @@
 
 ## Overview
 
-FirstRound is an AI-powered first-round interviewer with two modes:
+Vetto is an AI-powered vetto interviewer with two modes:
 
 1. **Full interview experience** — FastAPI backend + React frontend + LiveKit voice agent
 2. **Streamlit reviewer tool** — Question review/approval and results viewing
@@ -127,7 +127,7 @@ It is launched via:
 livekit-agent dev
 ```
 
-The agent registers with `agent_name="first-round-interviewer"`. When the frontend
+The agent registers with `agent_name="vetto-interviewer"`. When the frontend
 creates a room via `POST /api/livekit-token` and joins it, the LiveKit Cloud
 automatically dispatches the agent worker into the room based on the job request
 created during token generation. The agent then loads the approved interview
