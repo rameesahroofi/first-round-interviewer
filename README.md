@@ -1,4 +1,4 @@
-# Vetto — AI-Powered vetto Interviewer
+# Vetto — AI-Powered Interviewer
 
 An AI-powered vetto technical interviewer that conducts realistic, resume-aware voice interviews using a live LLM agent, evaluates candidate responses with Gemini, and produces structured performance reports.
 
